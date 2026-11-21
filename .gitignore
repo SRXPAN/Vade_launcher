@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+dist-dev/
+release/
+apps/agent/vendor/
+apps/agent/dev-data/
+*.blob
+*.log
+.DS_Store
+.claude/settings.local.json

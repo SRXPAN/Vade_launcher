@@ -1,0 +1,15 @@
+{
+  "name": "@vade/agent",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Vade Launcher client agent (Windows service on gaming PCs)",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.2",
+    "@vade/protocol": "0.1.0",
+    "ws": "8.23.0"
+  }
+}

@@ -1,0 +1,25 @@
+appId: ua.vade.launcher
+productName: Vade Launcher
+electronVersion: 45.4.1
+npmRebuild: false
+asar: true
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+# The agent installer travels with the admin app: Settings -> "Export agent package"
+extraResources:
+  - from: ../agent/dist/package
+    to: agent
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: VadeLauncher-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Vade Launcher
