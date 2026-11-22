@@ -1,5 +1,22 @@
 /** Contract between the renderer (window.vade) and the Electron main process. */
-import type { AppSettings, JobHistoryEntry, JobMode, LogLine, PcRecord, PcRuntime, SteamLoginResult } from '@vade/protocol';
+import type {
+  AppSettings,
+  DeployExecResult,
+  DeployFileResult,
+  DeployShell,
+  DiagActionResult,
+  DiagProcess,
+  DiagScreenshotResult,
+  GamesInstallResult,
+  GamesUninstallResult,
+  InstalledSteamGame,
+  JobHistoryEntry,
+  JobMode,
+  LogLine,
+  PcRecord,
+  PcRuntime,
+  SteamLoginResult,
+} from '@vade/protocol';
 import type { MapLayout } from './mapLayout';
 
 export type PcAction =
@@ -166,11 +183,70 @@ export interface AppInfo {
 
 export type SavePcResult = { ok: true; pcs: PcRecord[] } | { ok: false; errors: string[] };
 
+export interface PcGamesResult {
+  pcId: number;
+  ok: boolean;
+  games: InstalledSteamGame[];
+  error?: string;
+}
+
+export interface PickedDeployFile {
+  path: string;
+  name: string;
+  size: number;
+  sha256: string;
+}
+
+export interface DeployExecRequest {
+  pcIds: number[];
+  shell: DeployShell;
+  script: string;
+  timeoutSec: number;
+  pin?: string;
+}
+
+export interface DeployFileRequest {
+  pcIds: number[];
+  localPath: string;
+  targetPath: string;
+  pin?: string;
+}
+
+export interface DeployItemStatus {
+  pcId: number;
+  state: QueueItemStateUi;
+  message?: string;
+  exec?: DeployExecResult;
+  file?: DeployFileResult;
+}
+
+export interface DeployRunStatus {
+  kind: 'exec' | 'file';
+  title: string;
+  active: boolean;
+  startedAt: string;
+  finishedAt?: string;
+  counts: QueueCountsUi;
+  items: DeployItemStatus[];
+}
+
+export type AppUpdatePhase = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error';
+
+export interface AppUpdateState {
+  phase: AppUpdatePhase;
+  currentVersion: string;
+  availableVersion?: string;
+  percent?: number;
+  message?: string;
+}
+
 export interface VadeApi {
   getAppInfo(): Promise<AppInfo>;
   getSettings(): Promise<AppSettings>;
   saveSettings(settings: AppSettings): Promise<AppSettings>;
   regenerateClubKey(): Promise<AppSettings>;
+  setPin(currentPin: string | undefined, newPin: string | null): Promise<{ ok: boolean; settings?: AppSettings; error?: string }>;
+  verifyPin(pin: string): Promise<boolean>;
   listPcs(): Promise<PcRecord[]>;
   savePc(pc: PcRecord, originalId: number | null): Promise<SavePcResult>;
   deletePcs(ids: number[]): Promise<PcRecord[]>;
@@ -186,6 +262,7 @@ export interface VadeApi {
   steamLogin(req: SteamLoginRequest): Promise<SteamLoginReply[]>;
   scan(): Promise<ScanHost[]>;
   exportAgentPackage(): Promise<{ ok: boolean; path?: string; error?: string }>;
+  exportAgentZip(): Promise<{ ok: boolean; path?: string; error?: string }>;
   openDataDir(): Promise<void>;
   getSiteStatus(): Promise<SiteStatus>;
   /** Sends the current payload to url/token (may be unsaved values) and reports the HTTP result */
@@ -201,6 +278,24 @@ export interface VadeApi {
   cancelAgentUpdate(): Promise<void>;
   getAgentUpdateStatus(): Promise<AgentUpdateStatus | null>;
   onAgentUpdateStatus(cb: (s: AgentUpdateStatus | null) => void): () => void;
+  listGames(pcIds: number[]): Promise<PcGamesResult[]>;
+  uninstallGame(pcId: number, appId: number, libraryPath: string): Promise<GamesUninstallResult>;
+  installGame(pcId: number, appId: number, libraryPath?: string): Promise<GamesInstallResult>;
+  diagProcesses(pcId: number): Promise<DiagProcess[]>;
+  diagKillProcess(pcId: number, pid: number): Promise<DiagActionResult>;
+  diagRestartExplorer(pcId: number): Promise<DiagActionResult>;
+  diagScreenshot(pcId: number): Promise<DiagScreenshotResult>;
+  exportDiagnosticsZip(pcId?: number): Promise<{ ok: boolean; path?: string; error?: string }>;
+  pickDeployFile(): Promise<PickedDeployFile | null>;
+  startDeployExec(req: DeployExecRequest): Promise<{ ok: boolean; error?: string }>;
+  startDeployFile(req: DeployFileRequest): Promise<{ ok: boolean; error?: string }>;
+  cancelDeploy(): Promise<void>;
+  getDeployStatus(): Promise<DeployRunStatus | null>;
+  onDeployStatus(cb: (s: DeployRunStatus | null) => void): () => void;
+  getAppUpdateStatus(): Promise<AppUpdateState>;
+  checkAppUpdates(): Promise<AppUpdateState>;
+  installAppUpdate(): Promise<{ ok: boolean; error?: string }>;
+  onAppUpdateStatus(cb: (s: AppUpdateState) => void): () => void;
   onRuntimes(cb: (runtimes: PcRuntime[]) => void): () => void;
   onLogs(cb: (batches: LogBatch[]) => void): () => void;
   onScanProgress(cb: (p: ScanProgress) => void): () => void;
@@ -214,6 +309,8 @@ export const IPC = {
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
   settingsRegenKey: 'settings:regen-key',
+  pinSet: 'security:pin-set',
+  pinVerify: 'security:pin-verify',
   pcsList: 'pcs:list',
   pcsSave: 'pcs:save',
   pcsDelete: 'pcs:delete',
@@ -227,6 +324,7 @@ export const IPC = {
   steamLogin: 'steam:login',
   scan: 'net:scan',
   exportAgent: 'agent:export',
+  exportAgentZip: 'agent:export-zip',
   openData: 'app:open-data',
   siteStatus: 'site:status',
   siteTest: 'site:test',
@@ -238,10 +336,28 @@ export const IPC = {
   agentUpdateStart: 'agent-update:start',
   agentUpdateCancel: 'agent-update:cancel',
   agentUpdateStatus: 'agent-update:status',
+  gamesList: 'games:list',
+  gamesUninstall: 'games:uninstall',
+  gamesInstall: 'games:install',
+  diagProcesses: 'diag:processes',
+  diagKillProcess: 'diag:kill-process',
+  diagRestartExplorer: 'diag:restart-explorer',
+  diagScreenshot: 'diag:screenshot',
+  diagExportZip: 'diag:export-zip',
+  deployPickFile: 'deploy:pick-file',
+  deployExecStart: 'deploy:exec-start',
+  deployFileStart: 'deploy:file-start',
+  deployCancel: 'deploy:cancel',
+  deployStatus: 'deploy:status',
+  appUpdateStatus: 'app-update:status',
+  appUpdateCheck: 'app-update:check',
+  appUpdateInstall: 'app-update:install',
   // main -> renderer
   siteUpdate: 'site:update',
   queueUpdate: 'queue:update',
   agentUpdateUpdate: 'agent-update:update',
+  deployUpdate: 'deploy:update',
+  appUpdateChanged: 'app-update:changed',
   runtimesUpdate: 'rt:update',
   logsAppend: 'logs:append',
   scanProgress: 'scan:progress',

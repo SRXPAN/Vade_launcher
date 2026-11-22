@@ -64,7 +64,7 @@ export class AgentServer {
 
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const wss = new WebSocketServer({ port: this.opts.port, host: this.opts.bind, maxPayload: 1024 * 1024 });
+      const wss = new WebSocketServer({ port: this.opts.port, host: this.opts.bind, maxPayload: 8 * 1024 * 1024 });
       wss.once('error', reject);
       wss.once('listening', () => {
         wss.off('error', reject);
@@ -200,6 +200,37 @@ export class AgentServer {
         return a.selfUpdate({ url: String(args.url ?? ''), sha256: String(args.sha256 ?? ''), version: String(args.version ?? '') });
       case 'time.sync':
         return a.syncTime();
+      case 'games.list':
+        return a.listGames();
+      case 'games.uninstall':
+        return a.uninstallGame({ appId: Number(args.appId), libraryPath: String(args.libraryPath ?? '') });
+      case 'games.install':
+        return a.installGame({
+          appId: Number(args.appId),
+          libraryPath: typeof args.libraryPath === 'string' && args.libraryPath ? args.libraryPath : undefined,
+        });
+      case 'diag.processes':
+        return a.diagProcesses();
+      case 'diag.killProcess':
+        return a.diagKillProcess(Number(args.pid));
+      case 'diag.restartExplorer':
+        return a.diagRestartExplorer();
+      case 'diag.screenshot':
+        return a.diagScreenshot();
+      case 'diag.bundle':
+        return a.diagBundle();
+      case 'deploy.exec':
+        return a.deployExec({
+          shell: args.shell === 'cmd' ? 'cmd' : 'powershell',
+          script: String(args.script ?? ''),
+          timeoutSec: Number(args.timeoutSec) || 60,
+        });
+      case 'deploy.file':
+        return a.deployFile({
+          url: String(args.url ?? ''),
+          sha256: String(args.sha256 ?? ''),
+          targetPath: String(args.targetPath ?? ''),
+        });
       default:
         throw new Error(`Невідома команда: ${String(cmd)}`);
     }

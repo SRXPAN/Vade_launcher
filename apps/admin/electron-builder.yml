@@ -24,3 +24,7 @@ nsis:
   createDesktopShortcut: true
   shortcutName: Vade Launcher
   include: build/installer.nsh
+publish:
+  - provider: github
+    owner: SRXPAN
+    repo: Vade_launcher

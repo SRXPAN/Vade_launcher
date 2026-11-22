@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { InstalledSteamGame } from '@vade/protocol';
 import { parseVdf, vdfGet, type VdfObject } from './vdf';
 
 /**
@@ -45,6 +46,8 @@ export function findLibraries(steamPath: string): string[] {
 export interface InstalledApp {
   appId: number;
   name?: string;
+  installDir?: string;
+  sizeOnDiskBytes?: number;
 }
 
 /** Games installed in one library, from steamapps\appmanifest_<id>.acf */
@@ -63,12 +66,38 @@ export function installedApps(library: string): InstalledApp[] {
     const app: InstalledApp = { appId: Number(m[1]) };
     try {
       const state = vdfGet(parseVdf(fs.readFileSync(path.join(dir, n), 'utf8')), 'AppState');
-      const name = typeof state === 'object' ? vdfGet(state, 'name') : undefined;
-      if (typeof name === 'string') app.name = name;
+      if (state && typeof state === 'object') {
+        const name = vdfGet(state, 'name');
+        if (typeof name === 'string') app.name = name;
+        const installDir = vdfGet(state, 'installdir');
+        if (typeof installDir === 'string' && installDir.trim()) app.installDir = installDir.trim();
+        const sizeRaw = vdfGet(state, 'SizeOnDisk');
+        if (typeof sizeRaw === 'string' || typeof sizeRaw === 'number') {
+          const parsed = Number(sizeRaw);
+          if (Number.isFinite(parsed) && parsed >= 0) app.sizeOnDiskBytes = Math.round(parsed);
+        }
+      }
     } catch {
-      // the name is cosmetic
+      // ignore corrupted manifest metadata
     }
     apps.push(app);
   }
   return apps.sort((a, b) => a.appId - b.appId);
+}
+
+/** Full installed game inventory across all Steam libraries on this PC. */
+export function listInstalledGames(steamPath: string): InstalledSteamGame[] {
+  const out: InstalledSteamGame[] = [];
+  for (const lib of findLibraries(steamPath)) {
+    for (const app of installedApps(lib)) {
+      out.push({
+        appId: app.appId,
+        name: app.name || `App ${app.appId}`,
+        libraryPath: lib,
+        ...(app.installDir ? { installDir: app.installDir } : {}),
+        sizeOnDiskBytes: app.sizeOnDiskBytes ?? 0,
+      });
+    }
+  }
+  return out;
 }

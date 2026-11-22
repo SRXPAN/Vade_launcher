@@ -192,12 +192,13 @@ export function defaultSettings(clubKey: string): AppSettings {
       autoSyncTime: true,
     },
     maintenance: structuredClone(DEFAULT_MAINTENANCE),
+    clubAppIds: [730, 570, 578080],
     detector: structuredClone(DEFAULT_DETECTOR),
     postSessionClean: structuredClone(DEFAULT_POST_SESSION_CLEAN),
     alerts: { ...DEFAULT_ALERTS },
-    security: { clubKey },
+    security: { clubKey, pinHash: '' },
     site: { ...DEFAULT_SITE },
-    ui: { autostart: true, closeToTray: true, theme: 'system', historyRetentionDays: 14 },
+    ui: { autostart: true, closeToTray: true, theme: 'system', language: 'uk', historyRetentionDays: 14 },
   };
 }
 

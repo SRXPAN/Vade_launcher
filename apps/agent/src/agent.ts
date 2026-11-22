@@ -13,25 +13,46 @@ import {
   OCCUPANCY_REASON_TITLES,
   PROTOCOL_VERSION,
   type AgentConfigPayload,
-  type DetectorSettings,
-  type PostSessionCleanSettings,
-  type QuickCleanResult,
   type AgentInfo,
   type AgentState,
   type AgentStatus,
+  type DeployExecArgs,
+  type DeployExecResult,
+  type DeployFileArgs,
+  type DeployFileResult,
+  type DetectorSettings,
+  type DiagActionResult,
+  type DiagBundleResult,
+  type DiagProcess,
+  type DiagScreenshotResult,
+  type GamesInstallResult,
+  type GamesUninstallResult,
+  type InstalledSteamGame,
   type JobMode,
   type PendingPower,
+  type PostSessionCleanSettings,
   type PowerAction,
+  type QuickCleanResult,
   type SteamLoginResult,
 } from '@vade/protocol';
+import { downloadDeployFile, execDeployCommand } from './jobs/deploy';
+import { installSteamGame, uninstallSteamGame } from './jobs/games';
 import { runQuickClean } from './jobs/quickClean';
 import { JobRunner } from './jobs/runner';
 import type { Logger } from './logger';
 import { OccupancyDetector } from './occupancy/detector';
 import { PostSessionWatcher } from './occupancy/postSession';
 import { PresenceReporter, type PresenceMode } from './occupancy/presence';
+import { listInstalledGames } from './steam/libraries';
 import { downloadVerified, installedServicePaths, launchUpdateHelper, updateHelperScript } from './update/selfUpdate';
 import { ensureDefenderExclusions } from './win/defender';
+import {
+  captureUserScreenshot,
+  collectAgentDiagnostics,
+  killProcessSafe,
+  listUserProcesses,
+  restartUserExplorer,
+} from './win/diagnostics';
 import { DiskMonitor } from './win/disks';
 import { HealthMonitor } from './win/health';
 import { syncWindowsTime } from './win/time';
@@ -130,6 +151,7 @@ export class Agent extends EventEmitter {
   private readonly disks: DiskMonitor;
   private readonly health: HealthMonitor;
   private quickCleanBusy = false;
+  private gamesBusy = false;
   private quickCleanAt: string | null = null;
   private updating = false;
   private pendingPower: PendingPower | null = null;
@@ -205,9 +227,9 @@ export class Agent extends EventEmitter {
     d.log.on('line', (line) => this.emit('log', line));
   }
 
-  /** Anything that must not overlap with a job, a quick clean or a self-update. */
+  /** Anything that must not overlap with a job, a quick clean, a game install/uninstall, or a self-update. */
   private isBusy(): boolean {
-    return this.runner.isRunning() || this.loginBusy || this.powering || this.updating || this.quickCleanBusy;
+    return this.runner.isRunning() || this.loginBusy || this.powering || this.updating || this.quickCleanBusy || this.gamesBusy;
   }
 
   get log(): Logger {
@@ -500,6 +522,81 @@ export class Agent extends EventEmitter {
     const res = await syncWindowsTime(this.d.sys, this.d.log);
     this.changed();
     return res;
+  }
+
+  listGames(): InstalledSteamGame[] {
+    const steamPath = this.d.store.state.config?.maintenance.steamPath ?? 'C:\\Program Files (x86)\\Steam';
+    return listInstalledGames(steamPath);
+  }
+
+  async uninstallGame(args: { appId: number; libraryPath: string }): Promise<GamesUninstallResult> {
+    if (this.isBusy()) throw new AgentError('Зараз виконується інше завдання', ERR_BUSY);
+    this.gamesBusy = true;
+    this.changed();
+    try {
+      const steamPath = this.d.store.state.config?.maintenance.steamPath ?? 'C:\\Program Files (x86)\\Steam';
+      return await uninstallSteamGame({ sys: this.d.sys, log: this.d.log, steamPath }, args);
+    } finally {
+      this.gamesBusy = false;
+      this.changed();
+    }
+  }
+
+  async installGame(args: { appId: number; libraryPath?: string }): Promise<GamesInstallResult> {
+    if (this.isBusy()) throw new AgentError('Зараз виконується інше завдання', ERR_BUSY);
+    const m = this.d.store.state.config?.maintenance;
+    this.gamesBusy = true;
+    this.changed();
+    try {
+      return await installSteamGame(
+        {
+          sys: this.d.sys,
+          log: this.d.log,
+          dataDir: this.d.dataDir,
+          steamPath: m?.steamPath ?? 'C:\\Program Files (x86)\\Steam',
+          steamcmdDir: m?.steamcmdDir ?? 'C:\\steamcmd',
+          steamUser: m?.update.steamUser ?? '',
+        },
+        args,
+      );
+    } finally {
+      this.gamesBusy = false;
+      this.changed();
+    }
+  }
+
+  diagProcesses(): Promise<DiagProcess[]> {
+    return listUserProcesses(this.d.sys);
+  }
+
+  diagKillProcess(pid: number): Promise<DiagActionResult> {
+    return killProcessSafe(this.d.sys, this.d.log, pid);
+  }
+
+  diagRestartExplorer(): Promise<DiagActionResult> {
+    return restartUserExplorer(this.d.sys, this.d.log);
+  }
+
+  diagScreenshot(): Promise<DiagScreenshotResult> {
+    return captureUserScreenshot(this.d.sys, this.d.log, this.presence.dir, this.detector.state.presence);
+  }
+
+  diagBundle(): DiagBundleResult {
+    return collectAgentDiagnostics({
+      dataDir: this.d.dataDir,
+      store: this.d.store,
+      log: this.d.log,
+      info: this.info(),
+      status: this.status(),
+    });
+  }
+
+  deployExec(args: DeployExecArgs): Promise<DeployExecResult> {
+    return execDeployCommand(this.d.sys, this.d.log, args);
+  }
+
+  deployFile(args: DeployFileArgs): Promise<DeployFileResult> {
+    return downloadDeployFile(this.d.sys, this.d.log, args);
   }
 
   async shutdown(): Promise<void> {

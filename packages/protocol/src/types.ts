@@ -115,6 +115,8 @@ export interface NetworkSettings {
 export interface SecuritySettings {
   /** Shared secret between the admin app and all agents. Never sent over the wire. */
   clubKey: string;
+  /** Optional salted SHA-256 hash of Admin PIN ("<saltHex>:<hashHex>"); empty/omitted = disabled */
+  pinHash?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -264,6 +266,7 @@ export interface SitePayload {
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system';
+export type AppLanguage = 'uk' | 'pl' | 'en';
 
 /** Admin app behaviour (not sent to agents). */
 export interface UiSettings {
@@ -273,6 +276,8 @@ export interface UiSettings {
   closeToTray: boolean;
   /** Colour theme for the entire admin app (including the club map) */
   theme: ThemeMode;
+  /** Interface language */
+  language: AppLanguage;
   /** Number of days to retain job history records in history.json (default 14) */
   historyRetentionDays: number;
 }
@@ -282,6 +287,8 @@ export interface AppSettings {
   network: NetworkSettings;
   schedule: ScheduleSettings;
   maintenance: MaintenanceConfig;
+  /** Official Steam AppIDs expected to be installed across the club */
+  clubAppIds: number[];
   detector: DetectorSettings;
   postSessionClean: PostSessionCleanSettings;
   alerts: AlertSettings;
@@ -500,4 +507,100 @@ export interface PcRuntime {
   lastSeen: string | null;
   lastError: string | null;
   wolSentAt: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Games Matrix (Stage 1)                                              */
+/* ------------------------------------------------------------------ */
+
+export interface InstalledSteamGame {
+  appId: number;
+  name: string;
+  libraryPath: string;
+  installDir?: string;
+  sizeOnDiskBytes: number;
+}
+
+export interface GamesUninstallResult {
+  ok: boolean;
+  appId: number;
+  removedFiles: number;
+  failedFiles: number;
+  message: string;
+}
+
+export interface GamesInstallResult {
+  ok: boolean;
+  appId: number;
+  status: AppUpdateStatus;
+  message: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Quick Diagnostics & Bundle (Stages 2 & 6)                           */
+/* ------------------------------------------------------------------ */
+
+export interface DiagProcess {
+  pid: number;
+  name: string;
+  cpuPct: number;
+  ramMb: number;
+  sessionId?: number;
+  title?: string;
+}
+
+export interface DiagScreenshotResult {
+  jpegBase64: string;
+  width: number;
+  height: number;
+  takenAt: string;
+}
+
+export interface DiagActionResult {
+  ok: boolean;
+  message: string;
+}
+
+export interface DiagBundleResult {
+  collectedAt: string;
+  hostname: string;
+  agentVersion: string;
+  os: string;
+  agentConfig: Record<string, unknown>;
+  agentLog: string;
+  steamcmdLast: string;
+  systemInfo: Record<string, unknown>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Broadcast / Deploy (Stage 3)                                        */
+/* ------------------------------------------------------------------ */
+
+export type DeployShell = 'powershell' | 'cmd';
+
+export interface DeployExecArgs {
+  shell: DeployShell;
+  script: string;
+  timeoutSec: number;
+}
+
+export interface DeployExecResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  durationMs: number;
+}
+
+export interface DeployFileArgs {
+  url: string;
+  sha256: string;
+  targetPath: string;
+}
+
+export interface DeployFileResult {
+  ok: boolean;
+  bytes: number;
+  targetPath: string;
+  message: string;
 }

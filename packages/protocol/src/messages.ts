@@ -16,6 +16,17 @@ import type {
   AgentConfigPayload,
   AgentInfo,
   AgentStatus,
+  DeployExecArgs,
+  DeployExecResult,
+  DeployFileArgs,
+  DeployFileResult,
+  DiagActionResult,
+  DiagBundleResult,
+  DiagProcess,
+  DiagScreenshotResult,
+  GamesInstallResult,
+  GamesUninstallResult,
+  InstalledSteamGame,
   JobMode,
   LogLine,
   PendingPower,
@@ -105,6 +116,16 @@ export interface Commands {
   'agent.selfUpdate': { args: { url: string; sha256: string; version: string }; result: { message: string } };
   /** Start w32time if stopped and run `w32tm /resync /force`. */
   'time.sync': { args: Record<string, never>; result: { ok: boolean; agentTimeMs: number; message: string } };
+  'games.list': { args: Record<string, never>; result: InstalledSteamGame[] };
+  'games.uninstall': { args: { appId: number; libraryPath: string }; result: GamesUninstallResult };
+  'games.install': { args: { appId: number; libraryPath?: string }; result: GamesInstallResult };
+  'diag.processes': { args: Record<string, never>; result: DiagProcess[] };
+  'diag.killProcess': { args: { pid: number }; result: DiagActionResult };
+  'diag.restartExplorer': { args: Record<string, never>; result: DiagActionResult };
+  'diag.screenshot': { args: Record<string, never>; result: DiagScreenshotResult };
+  'diag.bundle': { args: Record<string, never>; result: DiagBundleResult };
+  'deploy.exec': { args: DeployExecArgs; result: DeployExecResult };
+  'deploy.file': { args: DeployFileArgs; result: DeployFileResult };
 }
 
 export type CommandName = keyof Commands;

@@ -2,7 +2,7 @@
  * Mutual authentication with a shared club key (node only: admin main process and agent).
  * The key itself never travels over the network.
  */
-import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { SealedSecret } from './messages';
 
 const DOMAIN = 'vade/1';
@@ -52,4 +52,38 @@ export function unseal(sessKey: Buffer, sealed: SealedSecret): string {
   const decipher = createDecipheriv('aes-256-gcm', sessKey, Buffer.from(sealed.iv, 'base64'));
   decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'));
   return Buffer.concat([decipher.update(Buffer.from(sealed.ct, 'base64')), decipher.final()]).toString('utf8');
+}
+
+function sha256Hex(input: string): string {
+  return createHash('sha256').update(input, 'utf8').digest('hex');
+}
+
+/** Salted SHA-256 hash of an Admin PIN (`<saltHex>:<hashHex>`). */
+export function hashPin(pin: string): string {
+  const clean = pin.trim();
+  if (clean.length < 4 || clean.length > 32) {
+    throw new Error('PIN має містити від 4 до 32 символів');
+  }
+  const salt = randomBytes(16).toString('hex');
+  const digest = sha256Hex(`${salt}:${clean}`);
+  return `${salt}:${digest}`;
+}
+
+/** Verifies an Admin PIN against `<saltHex>:<hashHex>` (or bare `<64-hex>`). Empty/disabled hash returns true. */
+export function verifyPin(pin: string, storedHash: string | undefined): boolean {
+  const stored = (storedHash ?? '').trim();
+  if (!stored) return true;
+  const clean = pin.trim();
+  if (!clean) return false;
+  const colon = stored.indexOf(':');
+  if (colon > 0) {
+    const salt = stored.slice(0, colon);
+    const expected = stored.slice(colon + 1).toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(expected)) return false;
+    return safeEqual(sha256Hex(`${salt}:${clean}`), expected);
+  }
+  if (/^[0-9a-f]{64}$/i.test(stored)) {
+    return safeEqual(sha256Hex(clean), stored.toLowerCase());
+  }
+  return false;
 }

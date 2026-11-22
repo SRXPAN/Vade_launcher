@@ -31,5 +31,5 @@ try {
   console.warn(`  • uninstaller workaround not applied (${e.message}); building the usual way`);
 }
 
-const artifacts = await build({ projectDir: adminRoot, config: path.join(adminRoot, 'electron-builder.yml') });
+const artifacts = await build({ projectDir: adminRoot, config: path.join(adminRoot, 'electron-builder.yml'), publish: 'never' });
 for (const a of artifacts) console.log(`✔ ${a}`);

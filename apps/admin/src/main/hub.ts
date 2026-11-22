@@ -6,6 +6,16 @@ import {
   normalizeMac,
   type AgentInfo,
   type AgentStatus,
+  type DeployExecArgs,
+  type DeployExecResult,
+  type DeployFileArgs,
+  type DeployFileResult,
+  type DiagActionResult,
+  type DiagBundleResult,
+  type DiagProcess,
+  type DiagScreenshotResult,
+  type GamesInstallResult,
+  type GamesUninstallResult,
   type JobHistoryEntry,
   type JobMode,
   type LogLevel,
@@ -13,7 +23,7 @@ import {
   type PcRuntime,
   type PowerAction,
 } from '@vade/protocol';
-import type { ActionOptions, ActionResult, LogBatch, PcAction, SteamLoginReply, SteamLoginRequest, UiLogLine } from '../shared/api';
+import type { ActionOptions, ActionResult, LogBatch, PcAction, PcGamesResult, SteamLoginReply, SteamLoginRequest, UiLogLine } from '../shared/api';
 import { AgentLink } from './agentLink';
 import type { AdminStore } from './store';
 import { sendWol } from './wol';
@@ -272,6 +282,61 @@ export class AgentHub extends EventEmitter<HubEvents> {
 
   localAddressOf(id: number): string | null {
     return this.links.get(id)?.localAddress ?? null;
+  }
+
+  listGames(pcIds: number[]): Promise<PcGamesResult[]> {
+    return Promise.all(
+      pcIds.map(async (pcId): Promise<PcGamesResult> => {
+        try {
+          const games = await this.onlineLink(pcId).request('games.list', {}, 20_000);
+          return { pcId, ok: true, games };
+        } catch (e) {
+          return { pcId, ok: false, games: [], error: errMsg(e) };
+        }
+      }),
+    );
+  }
+
+  async uninstallGame(pcId: number, appId: number, libraryPath: string): Promise<GamesUninstallResult> {
+    const res = await this.onlineLink(pcId).request('games.uninstall', { appId, libraryPath }, 180_000);
+    this.adminLog(pcId, res.ok ? 'info' : 'warn', res.message);
+    return res;
+  }
+
+  async installGame(pcId: number, appId: number, libraryPath?: string): Promise<GamesInstallResult> {
+    this.adminLog(pcId, 'info', `Запуск інсталяції гри AppID ${appId} через SteamCMD…`);
+    const res = await this.onlineLink(pcId).request('games.install', libraryPath ? { appId, libraryPath } : { appId }, 4 * 3600_000);
+    this.adminLog(pcId, res.ok ? 'info' : 'error', `AppID ${appId}: ${res.message}`);
+    return res;
+  }
+
+  diagProcesses(pcId: number): Promise<DiagProcess[]> {
+    return this.onlineLink(pcId).request('diag.processes', {}, 25_000);
+  }
+
+  diagKillProcess(pcId: number, pid: number): Promise<DiagActionResult> {
+    return this.onlineLink(pcId).request('diag.killProcess', { pid }, 15_000);
+  }
+
+  diagRestartExplorer(pcId: number): Promise<DiagActionResult> {
+    return this.onlineLink(pcId).request('diag.restartExplorer', {}, 25_000);
+  }
+
+  diagScreenshot(pcId: number): Promise<DiagScreenshotResult> {
+    return this.onlineLink(pcId).request('diag.screenshot', {}, 25_000);
+  }
+
+  collectDiagBundle(pcId: number): Promise<DiagBundleResult> {
+    return this.onlineLink(pcId).request('diag.bundle', {}, 30_000);
+  }
+
+  deployExec(pcId: number, args: DeployExecArgs): Promise<DeployExecResult> {
+    const timeoutMs = (Math.max(1, Math.min(600, args.timeoutSec || 60)) + 30) * 1000;
+    return this.onlineLink(pcId).request('deploy.exec', args, timeoutMs);
+  }
+
+  deployFile(pcId: number, args: DeployFileArgs): Promise<DeployFileResult> {
+    return this.onlineLink(pcId).request('deploy.file', args, 15 * 60_000);
   }
 
   private onlineLink(id: number): AgentLink {

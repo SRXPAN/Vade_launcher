@@ -22,7 +22,7 @@ import {
   worstHealthLevel,
   type PcRuntime,
 } from '../src/index';
-import { agentProof, authMac, newClubKey, safeEqual, seal, sessionKey, unseal } from '../src/auth';
+import { agentProof, authMac, hashPin, newClubKey, safeEqual, seal, sessionKey, unseal, verifyPin } from '../src/auth';
 
 describe('schedule', () => {
   const s = { startTime: '11:00', stepMin: 1 };
@@ -216,5 +216,29 @@ describe('clock drift detection', () => {
     expect(clockDriftSec(now + 300_000, now)).toBe(300);
     expect(formatClockDrift(300)).toBe('+5 хв');
     expect(formatClockDrift(-180)).toBe('−3 хв');
+  });
+});
+
+describe('PIN hashing and new default settings', () => {
+  it('hashes and verifies Admin PIN with per-hash random salt', () => {
+    expect(verifyPin('', '')).toBe(true);
+    expect(verifyPin('anything', undefined)).toBe(true);
+
+    const h1 = hashPin('1234');
+    const h2 = hashPin('1234');
+    expect(h1).not.toBe(h2);
+    expect(h1).toMatch(/^[0-9a-f]{32}:[0-9a-f]{64}$/);
+    expect(verifyPin('1234', h1)).toBe(true);
+    expect(verifyPin('1234', h2)).toBe(true);
+    expect(verifyPin('9999', h1)).toBe(false);
+    expect(verifyPin('', h1)).toBe(false);
+    expect(() => hashPin('123')).toThrow();
+  });
+
+  it('includes clubAppIds, pinHash and ui.language in defaults', () => {
+    const s = defaultSettings('club-key-1234567890');
+    expect(s.clubAppIds).toEqual([730, 570, 578080]);
+    expect(s.security.pinHash).toBe('');
+    expect(s.ui.language).toBe('uk');
   });
 });

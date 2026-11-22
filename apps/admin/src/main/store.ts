@@ -18,7 +18,7 @@ import {
   type JobState,
   type PcRecord,
 } from '@vade/protocol';
-import { newClubKey } from '@vade/protocol/auth';
+import { hashPin, newClubKey, verifyPin } from '@vade/protocol/auth';
 import { defaultMapLayout, sanitizeMapLayout, type MapLayout } from '../shared/mapLayout';
 import { HistoryStore } from './history';
 
@@ -171,7 +171,11 @@ export function sanitizeSettings(input: AppSettings, current: AppSettings): AppS
   }
   eu.apps = cleanApps.slice(0, 30);
   s.security.clubKey = s.security.clubKey.trim();
+  // Preserve existing pinHash unless changed explicitly through setPin()
+  s.security.pinHash = current.security.pinHash ?? '';
+  s.clubAppIds = cleanIds(s.clubAppIds);
   s.ui.theme = s.ui.theme === 'light' || s.ui.theme === 'dark' || s.ui.theme === 'system' ? s.ui.theme : 'system';
+  s.ui.language = s.ui.language === 'uk' || s.ui.language === 'pl' || s.ui.language === 'en' ? s.ui.language : 'uk';
   s.ui.historyRetentionDays = clamp(s.ui.historyRetentionDays, 1, 365, 14);
   return s;
 }
@@ -247,9 +251,33 @@ export class AdminStore {
   }
 
   regenerateKey(): AppSettings {
-    this.settings = { ...this.settings, security: { clubKey: newClubKey() } };
+    this.settings = { ...this.settings, security: { ...this.settings.security, clubKey: newClubKey() } };
     writeJson(this.settingsFile, this.settings);
     return this.settings;
+  }
+
+  verifyPin(pin: string): boolean {
+    return verifyPin(pin, this.settings.security.pinHash);
+  }
+
+  setPin(currentPin: string | undefined, newPin: string | null): { ok: boolean; settings?: AppSettings; error?: string } {
+    const hasExisting = !!(this.settings.security.pinHash ?? '').trim();
+    if (hasExisting && !verifyPin(currentPin ?? '', this.settings.security.pinHash)) {
+      return { ok: false, error: 'Невірний поточний PIN-код' };
+    }
+    if (newPin === null || newPin.trim() === '') {
+      this.settings = { ...this.settings, security: { ...this.settings.security, pinHash: '' } };
+      writeJson(this.settingsFile, this.settings);
+      return { ok: true, settings: this.settings };
+    }
+    try {
+      const nextHash = hashPin(newPin);
+      this.settings = { ...this.settings, security: { ...this.settings.security, pinHash: nextHash } };
+      writeJson(this.settingsFile, this.settings);
+      return { ok: true, settings: this.settings };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   savePc(input: PcRecord, originalId: number | null): { ok: true } | { ok: false; errors: string[] } {

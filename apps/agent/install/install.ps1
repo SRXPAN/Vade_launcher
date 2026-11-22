@@ -43,12 +43,20 @@ try {
   # ---- configuration ------------------------------------------------------
   Write-Step 'Reading configuration'
   $cfg = @{ clubKey = ''; port = 7420; bind = '0.0.0.0'; allowFrom = @() }
-  $cfgFile = Join-Path $here 'agent.json'
-  if (Test-Path -LiteralPath $cfgFile) {
-    $j = Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json
-    if ($j.clubKey) { $cfg.clubKey = [string]$j.clubKey }
-    if ($j.port) { $cfg.port = [int]$j.port }
-    if ($j.allowFrom) { $cfg.allowFrom = @($j.allowFrom) }
+  foreach ($cfgName in @('preconfig.json', 'agent.json')) {
+    $cfgFile = Join-Path $here $cfgName
+    if (Test-Path -LiteralPath $cfgFile) {
+      $j = Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json
+      if ($j.clubKey) { $cfg.clubKey = [string]$j.clubKey }
+      if ($j.port) { $cfg.port = [int]$j.port }
+      if ($j.allowFrom -and @($j.allowFrom).Count -gt 0) {
+        $cfg.allowFrom = @($j.allowFrom)
+      } elseif ($j.adminIp) {
+        $cfg.allowFrom = @([string]$j.adminIp)
+      }
+      if ($j.noPause -eq $true) { $NoPause = $true }
+      break
+    }
   }
   if ($ClubKey) { $cfg.clubKey = $ClubKey }
   if ($AdminIp) { $cfg.allowFrom = @($AdminIp) }
