@@ -121,6 +121,8 @@ function start(): void {
     site.notifyChange();
     return store.pcs;
   });
+  ipcMain.handle(IPC.mapGet, () => store.mapLayout);
+  ipcMain.handle(IPC.mapSave, (_e, layout: unknown) => store.saveMapLayout(layout));
   ipcMain.handle(IPC.runtimesGet, () => hub.runtimes());
   ipcMain.handle(IPC.actionRun, (_e, action: PcAction, ids: number[], opts?: ActionOptions) => {
     if (!ACTIONS.includes(action)) throw new Error(`Невідома дія ${action}`);

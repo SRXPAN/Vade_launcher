@@ -10,8 +10,12 @@ POST https://our-site.com/api/club-status
 Content-Type: application/json
 Authorization: Bearer <API Secret із налаштувань>
 X-Vade-Event: change | heartbeat | test
+X-Vade-Heartbeat: 600
 User-Agent: VadeLauncher/<версія>
 ```
+
+`X-Vade-Heartbeat` — поточний `heartbeatSec`. Усі ПК приходять одним запитом, тож приймач за ним відрізняє «нічого не змінилось»
+від «головний ПК зник»: якщо запитів немає довше за ~2 heartbeat, усі ПК варто показувати вимкненими.
 
 ```json
 {
@@ -57,6 +61,16 @@ KV на безкоштовному плані дозволяє **1000 запис
 * коли ліміт вичерпано, адмінка не шле нічого до 00:00 UTC (видно на вкладці, лічильник переживає перезапуск).
 
 Якщо змін багато, збільште `debounce` (наприклад, до 10–30 с) або переходьте на D1 / Durable Objects, де ліміти на записи значно вищі.
+
+## Сайт клубу VADE (Cloudflare Pages + D1)
+
+Робочий приймач — у репозиторії сайту [SRXPAN/VADE_Cyber_Club](https://github.com/SRXPAN/VADE_Cyber_Club):
+`functions/api/club-status.js`. Він кладе стани в ту саму базу D1, з якої сайт малює бейдж «N wolnych PC» і сітку ПК
+(`/api/status`), перекладає зони `Regular` / `Stream` → `Standard` / `Streamer` і показує `maintenance` як «Serwis / Сервіс».
+У D1 пишуться лише змінені ПК + один рядок «на зв'язку», тому ліміт 900 запитів на добу тут не обов'язковий.
+
+Налаштування в адмінці: **Webhook URL** `https://vade-cyberclub.pages.dev/api/club-status`,
+**API Secret** = секрет `VADE_TOKEN` у Cloudflare (Pages → Settings → Variables and Secrets). Інструкція — `vade/README.md`, розділ «Вільні ПК».
 
 ## Приклад приймача: Cloudflare Worker + KV
 

@@ -4,12 +4,31 @@ import type { Sys } from '../sys';
 import { EXE } from './paths';
 
 /**
+ * Group Policy "Require a password when a computer wakes" (on battery / plugged in) = disabled.
+ * The policy wins over the power scheme, so a CONSOLELOCK reset by Windows Update, a new
+ * power plan or a user cannot bring the login prompt back. Needs SYSTEM / administrator rights.
+ */
+export const WAKE_PASSWORD_POLICY_KEY = 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Power\\PowerSettings\\0e796bdb-100d-47d6-a2d5-f7d2daa51f51';
+
+export const WAKE_PASSWORD_POLICY_CMDS: string[][] = ['ACSettingIndex', 'DCSettingIndex'].map((v) => [
+  'add',
+  WAKE_PASSWORD_POLICY_KEY,
+  '/v',
+  v,
+  '/t',
+  'REG_DWORD',
+  '/d',
+  '0',
+  '/f',
+]);
+
+/**
  * Power policy required for unattended night work and for SENET:
  *  - hibernation available,
  *  - wake timers allowed (RTCWAKE) so the scheduled wake task can wake the PC,
- *  - NO password prompt after wake (CONSOLELOCK 0) so the club shell shows the
- *    client screen instead of the Windows login.
- * Idempotent, applied by the installer and on every agent start.
+ *  - NO password prompt after wake (CONSOLELOCK 0 + the HKLM policy above) so the club
+ *    shell shows the client screen instead of the Windows login.
+ * Idempotent, applied by the installer and on every agent (service) start.
  */
 export async function applyPowerPolicy(sys: Sys, log: Logger): Promise<void> {
   const cmds: string[][] = [
@@ -23,6 +42,10 @@ export async function applyPowerPolicy(sys: Sys, log: Logger): Promise<void> {
   for (const args of cmds) {
     const r = await sys.mutate(EXE.powercfg, args);
     if (r.code !== 0) log.warn(`powercfg ${args.join(' ')} → код ${r.code} ${r.stderr.trim()}`);
+  }
+  for (const args of WAKE_PASSWORD_POLICY_CMDS) {
+    const r = await sys.mutate(EXE.reg, args);
+    if (r.code !== 0) log.warn(`reg ${args.join(' ')} → код ${r.code} ${r.stderr.trim()}`);
   }
 }
 

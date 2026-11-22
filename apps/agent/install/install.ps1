@@ -110,6 +110,12 @@ try {
   & powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK 0 | Out-Null
   & powercfg.exe /setdcvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK 0 | Out-Null
   & powercfg.exe /setactive SCHEME_CURRENT | Out-Null
+  # Group Policy "Require a password when a computer wakes" = off (wins over the power scheme)
+  $wakePolicyKey = 'HKLM\SOFTWARE\Policies\Microsoft\Power\PowerSettings\0e796bdb-100d-47d6-a2d5-f7d2daa51f51'
+  foreach ($v in 'ACSettingIndex', 'DCSettingIndex') {
+    & reg.exe add $wakePolicyKey /v $v /t REG_DWORD /d 0 /f | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host "    WARNING: reg add $wakePolicyKey /v $v failed (code $LASTEXITCODE)" -ForegroundColor Yellow }
+  }
 
   # ---- Wake-on-LAN on the network adapters (best effort, depends on the driver)
   Write-Step 'Enabling Wake-on-LAN on network adapters'

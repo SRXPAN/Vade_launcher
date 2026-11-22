@@ -187,6 +187,8 @@ export class SitePublisher extends EventEmitter<{ status: [SiteStatus] }> {
         'Content-Type': 'application/json',
         'User-Agent': this.d.userAgent,
         'X-Vade-Event': event,
+        // lets the receiver tell "nothing changed" from "the admin PC is gone" (all PCs come in one request)
+        'X-Vade-Heartbeat': String(this.d.getSettings().heartbeatSec),
       };
       if (token.trim()) headers.Authorization = `Bearer ${token.trim()}`;
       const res = await (this.d.fetchImpl ?? fetch)(u, {

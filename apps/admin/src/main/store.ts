@@ -13,6 +13,7 @@ import {
   type PcRecord,
 } from '@vade/protocol';
 import { newClubKey } from '@vade/protocol/auth';
+import { defaultMapLayout, sanitizeMapLayout, type MapLayout } from '../shared/mapLayout';
 
 function readJson<T>(file: string): T | null {
   try {
@@ -110,17 +111,38 @@ export function sanitizeSettings(input: AppSettings, current: AppSettings): AppS
   return s;
 }
 
-/** settings.json + pcs.json in %APPDATA%\Vade Launcher\data */
+/** Reads map_layout.json; a damaged file falls back to its .bak, then to the seed (without overwriting it). */
+function loadMapLayout(file: string): { layout: MapLayout; fresh: boolean } {
+  for (const f of [file, `${file}.bak`]) {
+    const raw = readJson<unknown>(f);
+    if (raw == null) continue;
+    try {
+      return { layout: sanitizeMapLayout(raw), fresh: false };
+    } catch {
+      // not a layout object: try the backup
+    }
+  }
+  return { layout: defaultMapLayout(), fresh: !fs.existsSync(file) };
+}
+
+/** settings.json + pcs.json + map_layout.json in %APPDATA%\Vade Launcher\data */
 export class AdminStore {
   settings: AppSettings;
   pcs: PcRecord[];
+  mapLayout: MapLayout;
   readonly settingsFile: string;
   readonly pcsFile: string;
+  readonly mapFile: string;
 
   constructor(readonly dir: string) {
     fs.mkdirSync(dir, { recursive: true });
     this.settingsFile = path.join(dir, 'settings.json');
     this.pcsFile = path.join(dir, 'pcs.json');
+    this.mapFile = path.join(dir, 'map_layout.json');
+
+    const map = loadMapLayout(this.mapFile);
+    this.mapLayout = map.layout;
+    if (map.fresh) writeJson(this.mapFile, this.mapLayout);
 
     const loaded = readJson<AppSettings>(this.settingsFile);
     this.settings = mergeDefaults(defaultSettings(newClubKey()), loaded);
@@ -137,6 +159,12 @@ export class AdminStore {
     this.settings = sanitizeSettings(next, this.settings);
     writeJson(this.settingsFile, this.settings);
     return this.settings;
+  }
+
+  saveMapLayout(next: unknown): MapLayout {
+    this.mapLayout = sanitizeMapLayout(next);
+    writeJson(this.mapFile, this.mapLayout);
+    return this.mapLayout;
   }
 
   regenerateKey(): AppSettings {

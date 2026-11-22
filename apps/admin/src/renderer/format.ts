@@ -1,5 +1,5 @@
-import { OCCUPANCY_REASON_TITLES } from '@vade/protocol';
-import type { AppUpdateStatus, DisplayStatus, JobResult, Occupancy, PcRecord, PcRuntime, StepStatus } from '@vade/protocol';
+import { isPcScheduled, OCCUPANCY_REASON_TITLES, pcRunTime } from '@vade/protocol';
+import type { AppSettings, AppUpdateStatus, DisplayStatus, JobResult, Occupancy, PcRecord, PcRuntime, StepStatus } from '@vade/protocol';
 import type { PcAction, QueueItemStateUi } from '../shared/api';
 
 export const STATUS_LABEL: Record<DisplayStatus, string> = {
@@ -121,6 +121,12 @@ export function occupancyText(rt: PcRuntime | undefined): string {
   const s = rt?.status;
   if (!s?.occupancyReason) return 'агент не повідомляє про зайнятість (версія до 0.2)';
   return `${OCCUPANCY_REASON_TITLES[s.occupancyReason]}${s.occupancyDetail ? ` — ${s.occupancyDetail}` : ''}`;
+}
+
+/** "03:17" (own slot), "черга з 03:00" (queue mode) or null when the PC is not in the night schedule. */
+export function scheduleLabel(settings: AppSettings, pc: PcRecord): string | null {
+  if (!isPcScheduled(settings, pc)) return null;
+  return settings.schedule.mode === 'queue' ? `черга з ${settings.schedule.startTime}` : pcRunTime(settings.schedule, pc.id);
 }
 
 export function nextFreeId(pcs: PcRecord[]): number {

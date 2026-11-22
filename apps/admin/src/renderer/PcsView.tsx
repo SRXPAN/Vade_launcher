@@ -4,8 +4,10 @@ import {
   Ellipsis,
   KeyRound,
   Layers,
+  LayoutGrid,
   LoaderCircle,
   LogOut,
+  Map as MapIcon,
   Moon,
   PackageOpen,
   Play,
@@ -19,12 +21,13 @@ import {
   User,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { deriveDisplayStatus, ERR_OCCUPIED, isPcScheduled, pcRunTime, type AppSettings, type PcRecord, type PcRuntime } from '@vade/protocol';
+import { deriveDisplayStatus, ERR_OCCUPIED, type AppSettings, type PcRecord, type PcRuntime } from '@vade/protocol';
 import type { AgentUpdateStatus, PcAction, QueueRunStatus } from '../shared/api';
 import { api, errorText } from './api';
-import { ACTIONS, nextFreeId, occupancyOf, occupancyText, QUEUE_STATE_LABEL, zonesOf } from './format';
+import { ACTIONS, nextFreeId, occupancyOf, occupancyText, QUEUE_STATE_LABEL, scheduleLabel, zonesOf } from './format';
 import { AgentUpdateDialog, QueueDialog, RunBar } from './RunDialogs';
 import { LogDrawer } from './LogDrawer';
+import { ClubMap, type SelectMode } from './map/ClubMap';
 import { PcCard } from './PcCard';
 import { PcEditor } from './PcEditor';
 import { ScanDialog } from './ScanDialog';
@@ -42,8 +45,20 @@ interface Props {
 /** Actions that close Steam / games / browsers: they need the "player on the PC" warning. */
 const KICKS_PLAYER: PcAction[] = ['test', 'run', 'clean-logins'];
 
+type ViewMode = 'map' | 'cards';
+const VIEW_KEY = 'vade.pcsView';
+
+function loadViewMode(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'cards' ? 'cards' : 'map';
+  } catch {
+    return 'map';
+  }
+}
+
 export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Props) {
   const toast = useToast();
+  const [view, setView] = useState<ViewMode>(loadViewMode);
   const [zone, setZone] = useState('all');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -106,9 +121,19 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
     [pcs, zone, q, runtimes],
   );
   const groups = zone === 'all' ? zones.map((z) => ({ zone: z, pcs: visible.filter((p) => p.zone === z) })).filter((g) => g.pcs.length) : [{ zone, pcs: visible }];
+  const visibleIds = useMemo(() => new Set(visible.map((p) => p.id)), [visible]);
   const selIds = pcs.filter((p) => selected.has(p.id)).map((p) => p.id);
   const allVisible = visible.length > 0 && visible.every((p) => selected.has(p.id));
   const someVisible = visible.some((p) => selected.has(p.id));
+
+  const changeView = (v: ViewMode) => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // the choice is only a convenience
+    }
+  };
 
   const toggle = useCallback((id: number) => {
     setSelected((s) => {
@@ -118,6 +143,18 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
       return n;
     });
   }, []);
+  const selectOnMap = useCallback((ids: number[], mode: SelectMode) => {
+    setSelected((s) => {
+      if (mode === 'replace') return new Set(ids);
+      const n = new Set(s);
+      for (const id of ids) {
+        if (mode === 'toggle' && n.has(id)) n.delete(id);
+        else n.add(id);
+      }
+      return n;
+    });
+  }, []);
+  const addPcAt = useCallback((id: number, zoneName: string) => setEditor({ pc: { id, ip: '', mac: '', zone: zoneName }, originalId: null }), []);
   const selectWhere = (pred: (p: PcRecord) => boolean) => setSelected(new Set(pcs.filter(pred).map((p) => p.id)));
 
   const execute = useCallback(
@@ -175,9 +212,31 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
   );
 
   return (
-    <>
+    <div className={`pcs-view ${view}`}>
       <div className="toolbar">
         <div className="toolbar-row">
+          <Segmented
+            value={view}
+            onChange={changeView}
+            options={[
+              {
+                value: 'map',
+                label: (
+                  <span className="seg-icon">
+                    <MapIcon size={14} /> Карта
+                  </span>
+                ),
+              },
+              {
+                value: 'cards',
+                label: (
+                  <span className="seg-icon">
+                    <LayoutGrid size={14} /> Картки
+                  </span>
+                ),
+              },
+            ]}
+          />
           <Segmented
             value={zone}
             onChange={setZone}
@@ -312,7 +371,25 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
         />
       )}
 
-      {visible.length === 0 ? (
+      {view === 'map' ? (
+        <ClubMap
+          pcs={pcs}
+          runtimes={runtimes}
+          settings={settings}
+          selected={selected}
+          visible={visibleIds}
+          filterActive={zone !== 'all' || q !== ''}
+          runStates={runStates}
+          latestAgentVersion={latestAgent}
+          onSelect={selectOnMap}
+          onAction={request}
+          onLogs={setLogPc}
+          onEdit={openEditor}
+          onAddPc={addPcAt}
+          onSteamLogin={setSteamFor}
+          onUpdateAgent={openUpdate}
+        />
+      ) : visible.length === 0 ? (
         <div className="empty">{pcs.length ? 'Нічого не знайдено.' : 'Список ПК порожній. Додайте ПК вручну або проскануйте мережу.'}</div>
       ) : (
         groups.map((g) => (
@@ -331,9 +408,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                   pc={pc}
                   rt={runtimes[pc.id]}
                   selected={selected.has(pc.id)}
-                  runTime={
-                    !isPcScheduled(settings, pc) ? null : settings.schedule.mode === 'queue' ? `черга з ${settings.schedule.startTime}` : pcRunTime(settings.schedule, pc.id)
-                  }
+                  runTime={scheduleLabel(settings, pc)}
                   alerts={settings.alerts}
                   latestAgentVersion={latestAgent}
                   runState={runStates[pc.id] ?? null}
@@ -348,7 +423,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           </section>
         ))
       )}
-      <div style={{ height: 24 }} />
+      {view === 'cards' && <div style={{ height: 24 }} />}
 
       {logPcRecord && (
         <LogDrawer
@@ -454,6 +529,6 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           onClose={() => setConfirm(null)}
         />
       )}
-    </>
+    </div>
   );
 }

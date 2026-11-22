@@ -91,6 +91,7 @@ describe('site publisher', () => {
     expect(first.headers.authorization).toBe('Bearer s3cret');
     expect(first.headers['x-vade-event']).toBe('change');
     expect(first.headers['content-type']).toBe('application/json');
+    expect(Number(first.headers['x-vade-heartbeat'])).toBeGreaterThan(0);
     expect(first.body.pcs).toEqual([
       { id: 1, zone: 'Regular', status: 'offline' },
       { id: 2, zone: 'Regular', status: 'offline' },

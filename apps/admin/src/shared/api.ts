@@ -1,5 +1,6 @@
 /** Contract between the renderer (window.vade) and the Electron main process. */
 import type { AppSettings, JobMode, LogLine, PcRecord, PcRuntime, SteamLoginResult } from '@vade/protocol';
+import type { MapLayout } from './mapLayout';
 
 export type PcAction =
   | 'wake'
@@ -172,6 +173,10 @@ export interface VadeApi {
   listPcs(): Promise<PcRecord[]>;
   savePc(pc: PcRecord, originalId: number | null): Promise<SavePcResult>;
   deletePcs(ids: number[]): Promise<PcRecord[]>;
+  /** Club floor map (map_layout.json) */
+  getMapLayout(): Promise<MapLayout>;
+  /** Normalises and saves the map; returns what was written */
+  saveMapLayout(layout: MapLayout): Promise<MapLayout>;
   getRuntimes(): Promise<PcRuntime[]>;
   runAction(action: PcAction, pcIds: number[], opts?: ActionOptions): Promise<ActionResult[]>;
   getLogs(pcId: number): Promise<UiLogLine[]>;
@@ -207,6 +212,8 @@ export const IPC = {
   pcsList: 'pcs:list',
   pcsSave: 'pcs:save',
   pcsDelete: 'pcs:delete',
+  mapGet: 'map:get',
+  mapSave: 'map:save',
   runtimesGet: 'rt:get',
   actionRun: 'action:run',
   logsGet: 'logs:get',
