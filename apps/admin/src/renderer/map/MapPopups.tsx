@@ -1,8 +1,9 @@
-/** Hover card and context menu of a PC on the club map (HTML overlays above the SVG). */
+/** Hover card, view-mode PC menu, and edit-mode context menu on the club map. */
 import {
   BrushCleaning,
   CircleStop,
   KeyRound,
+  Link2,
   ListChecks,
   Moon,
   PackageOpen,
@@ -11,9 +12,12 @@ import {
   Plus,
   PowerOff,
   RotateCcw,
+  RotateCw,
   ScrollText,
   Snowflake,
   TimerOff,
+  Trash2,
+  Unlink,
   Zap,
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
@@ -28,9 +32,10 @@ import {
   type PcRuntime,
 } from '@vade/protocol';
 import type { PcAction } from '../../shared/api';
+import { LANDMARK_TITLES, type MapLabel, type MapLandmark, type MapZoneBox } from '../../shared/mapLayout';
 import { fmtAgo, fmtDateTime, fmtTime, occupancyText, RESULT_LABEL, scheduleLabel } from '../format';
 import { StatusBadge } from '../ui';
-import { clamp } from './mapEdit';
+import { clamp, type EditItemRef } from './mapEdit';
 import { TONE_COLOR, TONE_LABEL, type MapTone } from './mapStatus';
 
 export interface Anchor {
@@ -90,9 +95,9 @@ export function PcTooltip({ id, pc, rt, tone, settings, runState, latestAgentVer
       <>
         <div className="mt-head">
           <span className="mt-num">№{id}</span>
-          <span className="mt-chip">вільне місце</span>
+          <span className="mt-chip">резервний слот</span>
         </div>
-        <div className="mt-row dim">ПК з цим номером ще не додано в базу. Клікніть, щоб додати.</div>
+        <div className="mt-row dim">ПК з цим номером ще не додано в базу. Клікніть, щоб прив’язати або створити ПК.</div>
       </>
     );
   }
@@ -177,6 +182,7 @@ interface MenuProps {
   tone: MapTone;
   selected: boolean;
   outdated: boolean;
+  unplacedCount: number;
   onClose: () => void;
   onAction: (a: PcAction, ids: number[]) => void;
   onLogs: (id: number) => void;
@@ -185,6 +191,7 @@ interface MenuProps {
   onUpdateAgent: (ids: number[]) => void;
   onToggleSelect: (id: number) => void;
   onAdd: (id: number) => void;
+  onBindSlot: (slotId: number) => void;
 }
 
 export function PcMenu(p: MenuProps) {
@@ -197,10 +204,13 @@ export function PcMenu(p: MenuProps) {
       <>
         <div className="mm-head">
           <b>Місце №{p.id}</b>
-          <span className="dim">ПК не додано</span>
+          <span className="dim">резервний слот</span>
         </div>
         <button onClick={run(() => p.onAdd(p.id))}>
-          <Plus size={15} /> Додати ПК №{p.id}…
+          <Plus size={15} /> <span>Створити ПК №{p.id}…</span>
+        </button>
+        <button onClick={run(() => p.onBindSlot(p.id))}>
+          <Link2 size={15} /> <span>Прив’язати існуючий ПК{p.unplacedCount > 0 ? ` (${p.unplacedCount})` : ''}…</span>
         </button>
       </>
     );
@@ -247,4 +257,137 @@ export function PcMenu(p: MenuProps) {
       {item(p.selected ? 'Прибрати з вибору' : 'Додати до вибору', <ListChecks size={15} />, run(() => p.onToggleSelect(pc.id)))}
     </>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Edit-mode context menu                                              */
+/* ------------------------------------------------------------------ */
+
+interface EditMenuProps {
+  item: EditItemRef;
+  pc?: PcRecord;
+  landmark?: MapLandmark;
+  label?: MapLabel;
+  zone?: MapZoneBox;
+  unplacedCount: number;
+  onClose: () => void;
+  onEditPc: (pc: PcRecord) => void;
+  onCreatePcOnSlot: (slotId: number) => void;
+  onBindSlot: (slotId: number) => void;
+  onRemovePcFromMap: (id: number) => void;
+  onRotateLandmark: (id: string) => void;
+  onRemoveLandmark: (id: string) => void;
+  onEditLabel: (label: MapLabel) => void;
+  onRemoveLabel: (id: string) => void;
+  onEditZone: (zone: MapZoneBox) => void;
+  onRemoveZone: (id: string) => void;
+}
+
+export function EditContextMenu(p: EditMenuProps) {
+  const run = (fn: () => void) => () => {
+    p.onClose();
+    fn();
+  };
+
+  if (p.item.type === 'pc') {
+    const id = p.item.id;
+    if (p.pc) {
+      const pc = p.pc;
+      return (
+        <>
+          <div className="mm-head">
+            <b>ПК №{pc.id}</b>
+            <span className="dim">{pc.zone}</span>
+          </div>
+          <button onClick={run(() => p.onEditPc(pc))}>
+            <Pencil size={15} /> <span>Редагувати ПК…</span>
+          </button>
+          <hr />
+          <button className="danger" onClick={run(() => p.onRemovePcFromMap(id))} title="ПК залишиться у pcs.json, знімуться лише координати">
+            <Unlink size={15} /> <span>Прибрати ПК з карти</span>
+          </button>
+        </>
+      );
+    }
+    return (
+      <>
+        <div className="mm-head">
+          <b>Слот №{id}</b>
+          <span className="dim">резерв</span>
+        </div>
+        <button onClick={run(() => p.onCreatePcOnSlot(id))}>
+          <Plus size={15} /> <span>Створити новий ПК №{id}…</span>
+        </button>
+        <button onClick={run(() => p.onBindSlot(id))}>
+          <Link2 size={15} /> <span>Прив’язати існуючий ПК{p.unplacedCount > 0 ? ` (${p.unplacedCount})` : ''}…</span>
+        </button>
+        <hr />
+        <button className="danger" onClick={run(() => p.onRemovePcFromMap(id))}>
+          <Trash2 size={15} /> <span>Видалити слот</span>
+        </button>
+      </>
+    );
+  }
+
+  if (p.item.type === 'landmark' && p.landmark) {
+    const lm = p.landmark;
+    return (
+      <>
+        <div className="mm-head">
+          <b>{LANDMARK_TITLES[lm.kind]}</b>
+          <span className="dim">{lm.rot}°</span>
+        </div>
+        <button onClick={run(() => p.onRotateLandmark(lm.id))}>
+          <RotateCw size={15} /> <span>Повернути на 90° (R)</span>
+        </button>
+        <hr />
+        <button className="danger" onClick={run(() => p.onRemoveLandmark(lm.id))}>
+          <Trash2 size={15} /> <span>Видалити орієнтир</span>
+        </button>
+      </>
+    );
+  }
+
+  if (p.item.type === 'label' && p.label) {
+    const lbl = p.label;
+    return (
+      <>
+        <div className="mm-head">
+          <b>Підпис</b>
+          <span className="dim">{lbl.text}</span>
+        </div>
+        <button onClick={run(() => p.onEditLabel(lbl))}>
+          <Pencil size={15} /> <span>Редагувати підпис…</span>
+        </button>
+        <hr />
+        <button className="danger" onClick={run(() => p.onRemoveLabel(lbl.id))}>
+          <Trash2 size={15} /> <span>Видалити підпис</span>
+        </button>
+      </>
+    );
+  }
+
+  if (p.item.type === 'zone' && p.zone) {
+    const z = p.zone;
+    return (
+      <>
+        <div className="mm-head">
+          <span className="mt-dot" style={{ background: z.color }} />
+          <b>Зона «{z.name}»</b>
+          <span className="dim">
+            {z.w}×{z.h}
+          </span>
+        </div>
+        <button onClick={run(() => p.onEditZone(z))}>
+          <Pencil size={15} /> <span>Налаштувати зону…</span>
+        </button>
+        <hr />
+        <button className="danger" onClick={run(() => p.onRemoveZone(z.id))}>
+          <Trash2 size={15} /> <span>Видалити рамку зони</span>
+        </button>
+      </>
+    );
+  }
+
+  return null;
 }

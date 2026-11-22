@@ -10,7 +10,7 @@ interface Props {
   pcs: PcRecord[];
   zones: string[];
   onClose: () => void;
-  onSaved: (pcs: PcRecord[]) => void;
+  onSaved: (pcs: PcRecord[], savedPc?: PcRecord) => void;
 }
 
 export function PcEditor({ initial, originalId, pcs, zones, onClose, onSaved }: Props) {
@@ -50,7 +50,7 @@ export function PcEditor({ initial, originalId, pcs, zones, onClose, onSaved }: 
       const r = await api.savePc(pc, originalId);
       if (!r.ok) return setErrors(r.errors);
       toast('ok', originalId == null ? `ПК №${pc.id} додано` : `ПК №${pc.id} збережено`);
-      onSaved(r.pcs);
+      onSaved(r.pcs, pc);
     } catch (e) {
       setErrors([errorText(e)]);
     } finally {

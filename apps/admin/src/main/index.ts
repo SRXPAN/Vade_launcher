@@ -1,8 +1,10 @@
+import fs from 'node:fs';
 import path from 'node:path';
-import { BrowserWindow, ipcMain, Menu, shell, Tray } from 'electron';
+import { BrowserWindow, ipcMain, Menu, nativeTheme, shell, Tray } from 'electron';
 import type { AppSettings, PcRecord } from '@vade/protocol';
 import { app, dialog } from 'electron';
 import { IPC, type ActionOptions, type AgentUpdateRequest, type PcAction, type QueueStartRequest, type SteamLoginRequest } from '../shared/api';
+import { sanitizeMapLayout } from '../shared/mapLayout';
 import { agentPackageAvailable, agentPackageDir, exportAgentPackage } from './agentPackage';
 import { AgentUpdater, fileSource, readBundledSource } from './agentUpdater';
 import { AgentHub } from './hub';
@@ -46,6 +48,7 @@ function applyAutostart(enabled: boolean): void {
 function start(): void {
   Menu.setApplicationMenu(null);
   const store = new AdminStore(path.join(app.getPath('userData'), 'data'));
+  nativeTheme.themeSource = store.settings.ui.theme;
   const hub = new AgentHub(store);
   const queue = new MaintenanceQueue({
     pcs: () => store.pcs,
@@ -95,6 +98,7 @@ function start(): void {
     const prev = store.settings;
     const saved = store.saveSettings(next);
     if (prev.ui.autostart !== saved.ui.autostart) applyAutostart(saved.ui.autostart);
+    if (prev.ui.theme !== saved.ui.theme) nativeTheme.themeSource = saved.ui.theme;
     hub.sync();
     hub.pushConfigAll();
     // Only site settings changes force a new request; other edits must not spend the daily budget.
@@ -123,6 +127,38 @@ function start(): void {
   });
   ipcMain.handle(IPC.mapGet, () => store.mapLayout);
   ipcMain.handle(IPC.mapSave, (_e, layout: unknown) => store.saveMapLayout(layout));
+  ipcMain.handle(IPC.mapExport, async (_e, layout: unknown) => {
+    if (!win) return { ok: false };
+    try {
+      const clean = sanitizeMapLayout(layout);
+      const r = await dialog.showSaveDialog(win, {
+        title: 'Експортувати карту клубу',
+        defaultPath: 'map_layout.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (r.canceled || !r.filePath) return { ok: false };
+      fs.writeFileSync(r.filePath, JSON.stringify(clean, null, 2), 'utf8');
+      return { ok: true, path: r.filePath };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(IPC.mapImport, async () => {
+    if (!win) return { ok: false };
+    try {
+      const r = await dialog.showOpenDialog(win, {
+        title: 'Імпортувати карту клубу',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (r.canceled || !r.filePaths[0]) return { ok: false };
+      const raw = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8').replace(/^\uFEFF/, '')) as unknown;
+      const layout = sanitizeMapLayout(raw);
+      return { ok: true, layout };
+    } catch (e) {
+      return { ok: false, error: `Некоректний файл карти: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  });
   ipcMain.handle(IPC.runtimesGet, () => hub.runtimes());
   ipcMain.handle(IPC.actionRun, (_e, action: PcAction, ids: number[], opts?: ActionOptions) => {
     if (!ACTIONS.includes(action)) throw new Error(`Невідома дія ${action}`);
@@ -188,7 +224,7 @@ function start(): void {
     show: false,
     title: 'Vade Launcher',
     icon,
-    backgroundColor: '#0c0f14',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0f1117' : '#f1f5f9',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

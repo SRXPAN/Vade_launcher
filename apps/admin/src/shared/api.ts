@@ -177,6 +177,8 @@ export interface VadeApi {
   getMapLayout(): Promise<MapLayout>;
   /** Normalises and saves the map; returns what was written */
   saveMapLayout(layout: MapLayout): Promise<MapLayout>;
+  exportMapLayout(layout: MapLayout): Promise<{ ok: boolean; path?: string; error?: string }>;
+  importMapLayout(): Promise<{ ok: boolean; layout?: MapLayout; error?: string }>;
   getRuntimes(): Promise<PcRuntime[]>;
   runAction(action: PcAction, pcIds: number[], opts?: ActionOptions): Promise<ActionResult[]>;
   getLogs(pcId: number): Promise<UiLogLine[]>;
@@ -214,6 +216,8 @@ export const IPC = {
   pcsDelete: 'pcs:delete',
   mapGet: 'map:get',
   mapSave: 'map:save',
+  mapExport: 'map:export',
+  mapImport: 'map:import',
   runtimesGet: 'rt:get',
   actionRun: 'action:run',
   logsGet: 'logs:get',

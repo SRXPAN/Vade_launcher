@@ -1,10 +1,10 @@
 import { Copy, Eye, EyeOff, FolderOpen, HardDrive, KeyRound, Monitor, Network, Package, RefreshCw, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import type { AppSettings } from '@vade/protocol';
+import type { AppSettings, ThemeMode } from '@vade/protocol';
 import type { AppInfo } from '../shared/api';
 import { api, errorText } from './api';
 import { SaveBar } from './SaveBar';
-import { ConfirmDialog, Option, useToast } from './ui';
+import { ConfirmDialog, Option, Segmented, useToast } from './ui';
 import { useDraft } from './useDraft';
 
 interface Props {
@@ -160,6 +160,21 @@ export function SettingsView({ settings, onSaved, info }: Props) {
             <h2>
               <Monitor size={17} /> Застосунок
             </h2>
+            <div className="opt">
+              <div className="opt-text">
+                <div className="opt-title">Тема оформлення</div>
+                <div className="opt-desc">Синхронно змінює інтерфейс усіх вкладок, діалогів і карти клубу.</div>
+              </div>
+              <Segmented<ThemeMode>
+                value={draft.ui.theme}
+                onChange={(v) => update((d) => void (d.ui.theme = v))}
+                options={[
+                  { value: 'light', label: 'Світла' },
+                  { value: 'dark', label: 'Темна' },
+                  { value: 'system', label: 'Як у системі' },
+                ]}
+              />
+            </div>
             <Option
               title="Запускати разом з Windows"
               desc="Потрібно для нічного Wake-on-LAN: адмінка має працювати на головному ПК."

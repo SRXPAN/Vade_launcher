@@ -14,14 +14,14 @@ import { occupancyOf } from '../format';
 export type MapTone = 'free' | 'online' | 'busy' | 'work' | 'error' | 'sleep' | 'offline' | 'empty';
 
 export const TONE_COLOR: Record<MapTone, string> = {
-  free: '#3ccf82',
-  online: '#3ccf82',
-  busy: '#4aa3ff',
-  work: '#f3b33d',
-  error: '#ff5c5c',
-  sleep: '#9a8bff',
-  offline: '#5b6376',
-  empty: '#3a4152',
+  free: 'var(--tone-free)',
+  online: 'var(--tone-online)',
+  busy: 'var(--tone-busy)',
+  work: 'var(--tone-work)',
+  error: 'var(--tone-error)',
+  sleep: 'var(--tone-sleep)',
+  offline: 'var(--tone-offline)',
+  empty: 'var(--tone-empty)',
 };
 
 export const TONE_LABEL: Record<MapTone, string> = {

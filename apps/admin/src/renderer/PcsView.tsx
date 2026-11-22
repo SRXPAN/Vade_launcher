@@ -62,7 +62,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
   const [zone, setZone] = useState('all');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [editor, setEditor] = useState<{ pc: PcRecord; originalId: number | null } | null>(null);
+  const [editor, setEditor] = useState<{ pc: PcRecord; originalId: number | null; onCreated?: (pc: PcRecord) => void } | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
   const [steamFor, setSteamFor] = useState<number[] | null>(null);
   const [logPc, setLogPc] = useState<number | null>(null);
@@ -154,7 +154,9 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
       return n;
     });
   }, []);
-  const addPcAt = useCallback((id: number, zoneName: string) => setEditor({ pc: { id, ip: '', mac: '', zone: zoneName }, originalId: null }), []);
+  const addPcAt = useCallback((id: number, zoneName: string, onCreated?: (pc: PcRecord) => void) => {
+    setEditor({ pc: { id, ip: '', mac: '', zone: zoneName }, originalId: null, onCreated });
+  }, []);
   const selectWhere = (pred: (p: PcRecord) => boolean) => setSelected(new Set(pcs.filter(pred).map((p) => p.id)));
 
   const execute = useCallback(
@@ -502,9 +504,11 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           pcs={pcs}
           zones={zones}
           onClose={() => setEditor(null)}
-          onSaved={(list) => {
+          onSaved={(list, savedPc) => {
+            const cb = editor.onCreated;
             setPcs(list);
             setEditor(null);
+            if (savedPc && cb) cb(savedPc);
           }}
         />
       )}

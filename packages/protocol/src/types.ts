@@ -199,12 +199,16 @@ export interface SitePayload {
   pcs: Array<{ id: number; zone: string; status: PublicPcStatus }>;
 }
 
+export type ThemeMode = 'light' | 'dark' | 'system';
+
 /** Admin app behaviour (not sent to agents). */
 export interface UiSettings {
   /** Start the admin app with Windows (needed for night Wake-on-LAN) */
   autostart: boolean;
   /** Closing the window keeps the app running in the tray */
   closeToTray: boolean;
+  /** Colour theme for the entire admin app (including the club map) */
+  theme: ThemeMode;
 }
 
 export interface AppSettings {

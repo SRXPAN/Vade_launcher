@@ -108,6 +108,7 @@ export function sanitizeSettings(input: AppSettings, current: AppSettings): AppS
   s.maintenance.steamPath = s.maintenance.steamPath.trim().replace(/\\+$/, '');
   s.maintenance.steamcmdDir = s.maintenance.steamcmdDir.trim().replace(/\\+$/, '');
   s.security.clubKey = s.security.clubKey.trim();
+  s.ui.theme = s.ui.theme === 'light' || s.ui.theme === 'dark' || s.ui.theme === 'system' ? s.ui.theme : 'system';
   return s;
 }
 

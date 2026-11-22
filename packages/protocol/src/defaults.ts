@@ -121,7 +121,7 @@ export function defaultSettings(clubKey: string): AppSettings {
     alerts: { ...DEFAULT_ALERTS },
     security: { clubKey },
     site: { ...DEFAULT_SITE },
-    ui: { autostart: true, closeToTray: true },
+    ui: { autostart: true, closeToTray: true, theme: 'system' },
   };
 }
 

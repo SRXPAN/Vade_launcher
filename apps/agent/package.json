@@ -1,6 +1,6 @@
 {
   "name": "@vade/agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Vade Launcher client agent (Windows service on gaming PCs)",
   "scripts": {

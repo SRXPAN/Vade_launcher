@@ -4,8 +4,32 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SEED_PCS, type PcRuntime } from '@vade/protocol';
 import { AdminStore } from '../src/main/store';
-import { defaultMapLayout, minGridSize, sanitizeMapLayout, type MapLayout } from '../src/shared/mapLayout';
-import { addWall, movePc, pcsInRect, placePc, resizeGrid, rotateLandmark, wallTo, zoneNear } from '../src/renderer/map/mapEdit';
+import { defaultMapLayout, LANDMARK_KINDS, minGridSize, sanitizeMapLayout, type MapLayout } from '../src/shared/mapLayout';
+import {
+  addLandmark,
+  addWall,
+  addZone,
+  clampGroupDelta,
+  hasGroupPcConflict,
+  itemsInRect,
+  moveGroup,
+  movePc,
+  nextFreeSlotId,
+  pcsInRect,
+  placePc,
+  removeItems,
+  replaceSlotId,
+  resizeGrid,
+  resizeZone,
+  resizeZoneRect,
+  rotateLandmark,
+  rotateLandmarks,
+  updateZone,
+  wallTo,
+  zoneBoxAt,
+  zoneNear,
+  zoneNearCell,
+} from '../src/renderer/map/mapEdit';
 import { mapTone } from '../src/renderer/map/mapStatus';
 
 const pos = (l: MapLayout, id: number) => {
@@ -248,6 +272,117 @@ describe('map editing', () => {
     const zones = new Map(SEED_PCS.map((p) => [p.id, p.zone]));
     expect(zoneNear(l, (id) => zones.get(id), 8)).toBe('Regular');
     expect(zoneNear(l, () => undefined, 8)).toBe('Regular');
+  });
+
+  it('supports all new landmarks and rotates multiple landmarks together', () => {
+    let l = defaultMapLayout();
+    for (const kind of ['bar', 'sofa', 'console', 'server', 'exit'] as const) {
+      expect(LANDMARK_KINDS).toContain(kind);
+      l = addLandmark(l, kind, 3.5, 4.5, 90);
+    }
+    const clean = sanitizeMapLayout(l);
+    expect(clean.landmarks.some((m) => m.kind === 'bar' && m.rot === 90)).toBe(true);
+    expect(clean.landmarks.some((m) => m.kind === 'sofa')).toBe(true);
+    expect(clean.landmarks.some((m) => m.kind === 'console')).toBe(true);
+    expect(clean.landmarks.some((m) => m.kind === 'server')).toBe(true);
+    expect(clean.landmarks.some((m) => m.kind === 'exit')).toBe(true);
+
+    const ids = clean.landmarks.filter((m) => m.kind === 'bar' || m.kind === 'sofa').map((m) => m.id);
+    const rotated = rotateLandmarks(clean, ids);
+    for (const id of ids) {
+      expect(rotated.landmarks.find((m) => m.id === id)?.rot).toBe(180);
+    }
+  });
+
+  it('adds, resizes, updates, and sanitizes zone boxes and respects them in minGridSize', () => {
+    let l = defaultMapLayout();
+    l = addZone(l, { name: 'VIP', color: '#eab308', x: 1, y: 1, w: 5, h: 4 });
+    expect(l.zones).toHaveLength(1);
+    const z = l.zones[0];
+    expect(zoneBoxAt(l, 2, 2)).toBe('VIP');
+    expect(zoneBoxAt(l, 10, 10)).toBeUndefined();
+    expect(zoneNearCell(l, () => 'Regular', 2, 2)).toBe('VIP');
+
+    const resizedRect = resizeZoneRect(l, z, 'se', 8, 7);
+    expect(resizedRect).toEqual({ x: 1, y: 1, w: 7, h: 6 });
+    l = resizeZone(l, z.id, resizedRect);
+    l = updateZone(l, z.id, { name: 'Stream VIP', color: '#9a8bff' });
+    expect(l.zones[0]).toMatchObject({ name: 'Stream VIP', color: '#9a8bff', w: 7, h: 6 });
+
+    const clean = sanitizeMapLayout({
+      ...l,
+      zones: [
+        ...l.zones,
+        { id: 'bad-color', name: '  Lounge  ', x: 20, y: 12, w: 10, h: 10, color: 'not-hex' },
+      ],
+    });
+    expect(clean.zones).toHaveLength(2);
+    expect(clean.zones[1]).toMatchObject({ name: 'Lounge', x: 20, y: 12, w: 4, h: 2, color: '#4f8cff' });
+    expect(minGridSize({ pcs: [], walls: [], landmarks: [], labels: [], zones: [{ id: 'z1', name: 'A', x: 10, y: 8, w: 5, h: 4, color: '#4f8cff' }] })).toEqual({
+      cols: 15,
+      rows: 12,
+    });
+  });
+
+  it('supports group marquee selection, group move with bounds/conflict checks, and bulk removal', () => {
+    const l = defaultMapLayout();
+    const picked = itemsInRect(l, 0.5, 9.5, 4.5, 10.5);
+    expect(picked.filter((i) => i.type === 'pc').map((i) => i.id).sort((a, b) => a - b)).toEqual([6, 7, 8, 9]);
+
+    // Move row 6..9 up by 1 cell
+    const moved = moveGroup(l, picked, 0, -1);
+    expect(pos(moved, 6)).toEqual({ id: 6, x: 1, y: 9 });
+    expect(pos(moved, 9)).toEqual({ id: 9, x: 4, y: 9 });
+
+    // Clamping prevents moving off-grid
+    expect(clampGroupDelta(l, picked, -10, 0)).toEqual({ dx: -1, dy: 0 });
+
+    // Moving row 6..9 down by 2 cells collides with 12..15 at y=12
+    expect(hasGroupPcConflict(l, picked, 0, 2)).toBe(true);
+    expect(moveGroup(l, picked, 0, 2)).toBe(l);
+
+    // Bulk remove removes selected slots without touching others
+    const removed = removeItems(l, picked);
+    expect(removed.pcs.some((p) => p.id === 6)).toBe(false);
+    expect(removed.pcs.some((p) => p.id === 1)).toBe(true);
+  });
+
+  it('computes nextFreeSlotId and binds an existing PC onto an empty reserve slot', () => {
+    const l = defaultMapLayout();
+    expect(nextFreeSlotId(l, SEED_PCS.map((p) => p.id))).toBe(30);
+    // Replace empty reserve slot #8 with unplaced PC #35
+    const bound = replaceSlotId(l, 8, 35);
+    expect(bound.pcs.some((p) => p.id === 8)).toBe(false);
+    expect(pos(bound, 35)).toEqual({ id: 35, x: pos(l, 8).x, y: pos(l, 8).y });
+    // Cannot bind to an ID that is already on the map
+    expect(replaceSlotId(l, 8, 1)).toBe(l);
+  });
+});
+
+describe('AdminStore theme setting', () => {
+  const dirs: string[] = [];
+  const tmp = () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'vade-theme-'));
+    dirs.push(d);
+    return d;
+  };
+  afterEach(() => {
+    for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it('defaults ui.theme to system, persists light/dark, and sanitizes invalid values', () => {
+    const dir = tmp();
+    const store = new AdminStore(dir);
+    expect(store.settings.ui.theme).toBe('system');
+
+    store.saveSettings({ ...store.settings, ui: { ...store.settings.ui, theme: 'dark' } });
+    expect(new AdminStore(dir).settings.ui.theme).toBe('dark');
+
+    store.saveSettings({ ...store.settings, ui: { ...store.settings.ui, theme: 'light' } });
+    expect(new AdminStore(dir).settings.ui.theme).toBe('light');
+
+    const bad = { ...store.settings, ui: { ...store.settings.ui, theme: 'neon' as never } };
+    expect(store.saveSettings(bad).ui.theme).toBe('system');
   });
 });
 

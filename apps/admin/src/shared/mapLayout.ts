@@ -9,7 +9,16 @@
  * A slot is keyed by the table number, so a slot without a PC in pcs.json is drawn as an inactive place.
  */
 
-export type LandmarkKind = 'entrance' | 'reception' | 'wc' | 'extinguisher';
+export type LandmarkKind =
+  | 'entrance'
+  | 'reception'
+  | 'wc'
+  | 'extinguisher'
+  | 'bar'
+  | 'sofa'
+  | 'console'
+  | 'server'
+  | 'exit';
 export type Rotation = 0 | 90 | 180 | 270;
 
 export interface MapPcSlot {
@@ -30,7 +39,7 @@ export interface MapLandmark {
   kind: LandmarkKind;
   x: number;
   y: number;
-  /** Direction of the entrance arrow, 0 = pointing down */
+  /** Rotation in 90° clockwise steps */
   rot: Rotation;
 }
 
@@ -43,6 +52,17 @@ export interface MapLabel {
   zone?: string;
 }
 
+export interface MapZoneBox {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Hex colour (#rrggbb) for the translucent zone fill and border */
+  color: string;
+}
+
 export interface MapLayout {
   version: 1;
   cols: number;
@@ -51,16 +71,43 @@ export interface MapLayout {
   walls: MapWall[];
   landmarks: MapLandmark[];
   labels: MapLabel[];
+  zones: MapZoneBox[];
 }
 
-export const LANDMARK_KINDS: LandmarkKind[] = ['entrance', 'reception', 'wc', 'extinguisher'];
+export const LANDMARK_KINDS: LandmarkKind[] = [
+  'entrance',
+  'exit',
+  'reception',
+  'wc',
+  'bar',
+  'sofa',
+  'console',
+  'server',
+  'extinguisher',
+];
 
 export const LANDMARK_TITLES: Record<LandmarkKind, string> = {
   entrance: 'Вхід',
+  exit: 'Вихід / Двері',
   reception: 'Рецепція / адмін',
   wc: 'Туалет (WC)',
+  bar: 'Бар / Холодильник',
+  sofa: 'Диван / Зона очікування',
+  console: 'Консольна зона (PS5)',
+  server: 'Серверна / Роутер',
   extinguisher: 'Вогнегасник',
 };
+
+export const ZONE_COLORS = [
+  { label: 'Синій', value: '#4f8cff' },
+  { label: 'Фіолетовий', value: '#9a8bff' },
+  { label: 'Золотий (VIP)', value: '#eab308' },
+  { label: 'Смарагдовий', value: '#10b981' },
+  { label: 'Помаранчевий', value: '#f97316' },
+  { label: 'Червоний', value: '#ef4444' },
+  { label: 'Бірюзовий', value: '#06b6d4' },
+  { label: 'Сірий', value: '#64748b' },
+] as const;
 
 export const MAP_LIMITS = {
   minCols: 6,
@@ -71,7 +118,9 @@ export const MAP_LIMITS = {
   maxWalls: 2000,
   maxLandmarks: 200,
   maxLabels: 200,
+  maxZones: 50,
   maxLabelLength: 40,
+  maxZoneNameLength: 40,
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -144,6 +193,7 @@ export function defaultMapLayout(): MapLayout {
       { id: 'zone-room', text: 'Regular', x: 18, y: 5.5, zone: 'Regular' },
       { id: 'zone-right', text: 'Regular', x: 22.5, y: 1.5, zone: 'Regular' },
     ],
+    zones: [],
   };
 }
 
@@ -154,9 +204,10 @@ export function defaultMapLayout(): MapLayout {
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 const half = (v: number) => Math.round(v * 2) / 2;
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
 /** Smallest grid that still contains every element (the editor never shrinks below it). */
-export function minGridSize(l: Pick<MapLayout, 'pcs' | 'walls' | 'landmarks' | 'labels'>): { cols: number; rows: number } {
+export function minGridSize(l: Pick<MapLayout, 'pcs' | 'walls' | 'landmarks' | 'labels'> & { zones?: MapZoneBox[] }): { cols: number; rows: number } {
   let cols: number = MAP_LIMITS.minCols;
   let rows: number = MAP_LIMITS.minRows;
   for (const p of l.pcs) {
@@ -170,6 +221,10 @@ export function minGridSize(l: Pick<MapLayout, 'pcs' | 'walls' | 'landmarks' | '
   for (const m of [...l.landmarks, ...l.labels]) {
     cols = Math.max(cols, Math.ceil(m.x + 0.5));
     rows = Math.max(rows, Math.ceil(m.y + 0.5));
+  }
+  for (const z of l.zones ?? []) {
+    cols = Math.max(cols, z.x + z.w);
+    rows = Math.max(rows, z.y + z.h);
   }
   return { cols, rows };
 }
@@ -257,5 +312,23 @@ export function sanitizeMapLayout(input: unknown): MapLayout {
     if (labels.length >= MAP_LIMITS.maxLabels) break;
   }
 
-  return { version: 1, cols, rows, pcs, walls, landmarks, labels };
+  const zoneIds = new Set<string>();
+  const zones: MapZoneBox[] = [];
+  for (const z of arr(src.zones)) {
+    const x = num(z.x);
+    const y = num(z.y);
+    const w = num(z.w);
+    const h = num(z.h);
+    if (x == null || y == null || w == null || h == null) continue;
+    const zx = Math.round(clamp(x, 0, cols - 1));
+    const zy = Math.round(clamp(y, 0, rows - 1));
+    const zw = Math.round(clamp(w, 1, cols - zx));
+    const zh = Math.round(clamp(h, 1, rows - zy));
+    const name = typeof z.name === 'string' && z.name.trim() ? z.name.trim().slice(0, MAP_LIMITS.maxZoneNameLength) : 'Зона';
+    const color = typeof z.color === 'string' && HEX_COLOR.test(z.color.trim()) ? z.color.trim().toLowerCase() : ZONE_COLORS[0].value;
+    zones.push({ id: cleanId(z.id, zoneIds, 'zone'), name, x: zx, y: zy, w: zw, h: zh, color });
+    if (zones.length >= MAP_LIMITS.maxZones) break;
+  }
+
+  return { version: 1, cols, rows, pcs, walls, landmarks, labels, zones };
 }
