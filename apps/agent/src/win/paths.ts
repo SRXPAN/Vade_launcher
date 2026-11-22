@@ -16,6 +16,9 @@ export const EXE = {
   icacls: path.join(sys32, 'icacls.exe'),
   conhost: path.join(sys32, 'conhost.exe'),
   powershell: path.join(sys32, 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  net: path.join(sys32, 'net.exe'),
+  w32tm: path.join(sys32, 'w32tm.exe'),
+  nvidiaSmi: path.join(sys32, 'nvidia-smi.exe'),
 };
 
 export const WINDOWS_TEMP = path.join(sysRoot, 'Temp');

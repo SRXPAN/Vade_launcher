@@ -3,15 +3,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { validateConfigPayload } from '../src/agent';
-import { planSteps } from '../src/jobs/runner';
+import { collectActiveLanInfo } from '../src/discovery';
+import { isAppErrorStatus, JobRunner, partitionLibraryApps, planSteps } from '../src/jobs/runner';
+import { splitArgs, waitForNetworkIdle } from '../src/jobs/extraUpdaters';
 import { Logger } from '../src/logger';
 import { AgentScheduler } from '../src/scheduler';
 import { findLibraries, installedApps } from '../src/steam/libraries';
 import { classifyApp, classifySteamLogin, detectLoginError, parseAppResultLine, parseProgress } from '../src/steam/steamcmd';
 import { parseVdf } from '../src/steam/vdf';
-import { Sys } from '../src/sys';
+import { AgentStore } from '../src/store';
+import { decodeConsoleBuffer, decodeCp866, parseChcpLabel, Sys } from '../src/sys';
+import { DEFENDER_EXCLUSION_PATHS, defenderExclusionScript, ensureDefenderExclusions } from '../src/win/defender';
+import { healthChanged, parseNvidiaTemp, parseRamTotalGb, parseRefreshRate, parseSsdJson } from '../src/win/health';
 import { createJunction, freeLinkSlot, isLink, removeLinkOnly } from '../src/win/junction';
-import { buildAgentConfig, defaultSettings, DEFAULT_MAINTENANCE, SEED_PCS, type AgentSchedule } from '@vade/protocol';
+import { buildAgentConfig, defaultSettings, DEFAULT_MAINTENANCE, SEED_PCS, type AgentSchedule, type JobState } from '@vade/protocol';
 
 let tmp: string;
 let log: Logger;
@@ -71,6 +76,14 @@ describe('steamcmd output', () => {
     expect(parseAppResultLine("Success! App '570' already up to date.")).toMatchObject({ appId: 570, status: 'ok' });
     expect(parseAppResultLine("ERROR! Failed to install app '578080' (No subscription)")).toMatchObject({
       appId: 578080,
+      status: 'skipped_no_subscription',
+    });
+    expect(parseAppResultLine("ERROR! Failed to install app '1422450' (Invalid Platform)")).toMatchObject({
+      appId: 1422450,
+      status: 'skipped_no_subscription',
+    });
+    expect(parseAppResultLine("ERROR! Failed to install app '1422450' (Missing configuration)")).toMatchObject({
+      appId: 1422450,
       status: 'skipped_no_subscription',
     });
     expect(parseAppResultLine("ERROR! Failed to install app '440' (Disk write failure)")).toMatchObject({ status: 'error', message: 'Disk write failure' });
@@ -158,6 +171,136 @@ describe('job planning and config validation', () => {
     expect(validateConfigPayload({ ...cfg, maintenance: { ...cfg.maintenance, steamPath: 'C:\\' } })).toMatch(/корінь/);
     expect(validateConfigPayload({ ...cfg, maintenance: { ...cfg.maintenance, steamPath: 'Steam' } })).toMatch(/абсолютний/);
   });
+
+  it('partitions ignored apps in auto mode and classifies error statuses per treatNoSubscriptionAsError', () => {
+    const installed = [
+      { appId: 730, name: 'Counter-Strike 2' },
+      { appId: 1422450, name: 'Deadlock' },
+      { appId: 570, name: 'Dota 2' },
+    ];
+    const autoPart = partitionLibraryApps(installed, {
+      ...DEFAULT_MAINTENANCE.update,
+      mode: 'auto',
+      ignoreAppIds: [1422450],
+    });
+    expect(autoPart.toUpdate.map((a) => a.appId)).toEqual([730, 570]);
+    expect(autoPart.ignored.map((a) => a.appId)).toEqual([1422450]);
+
+    const listPart = partitionLibraryApps(installed, {
+      ...DEFAULT_MAINTENANCE.update,
+      mode: 'list',
+      appIds: [730],
+      ignoreAppIds: [730],
+    });
+    expect(listPart.toUpdate.map((a) => a.appId)).toEqual([730]);
+    expect(listPart.ignored).toEqual([]);
+
+    expect(isAppErrorStatus('ignored', true)).toBe(false);
+    expect(isAppErrorStatus('skipped_no_subscription', false)).toBe(false);
+    expect(isAppErrorStatus('skipped_no_subscription', true)).toBe(true);
+    expect(isAppErrorStatus('error', false)).toBe(true);
+    expect(isAppErrorStatus('login_error', false)).toBe(true);
+  });
+
+  it('skips ignoreAppIds in auto mode and finishes with ok on No subscription when treatNoSubscriptionAsError is false', async () => {
+    const runDir = path.join(tmp, 'runner-auto-ok');
+    const steam = path.join(runDir, 'Steam');
+    const steamcmd = path.join(runDir, 'steamcmd');
+    fs.mkdirSync(path.join(steam, 'steamapps'), { recursive: true });
+    fs.mkdirSync(steamcmd, { recursive: true });
+    fs.writeFileSync(path.join(steam, 'steam.exe'), '');
+    fs.writeFileSync(path.join(steam, 'steamapps', 'appmanifest_730.acf'), '"AppState" { "appid" "730" "name" "Counter-Strike 2" }');
+    fs.writeFileSync(path.join(steam, 'steamapps', 'appmanifest_1422450.acf'), '"AppState" { "appid" "1422450" "name" "Deadlock" }');
+    fs.writeFileSync(path.join(steam, 'steamapps', 'appmanifest_578080.acf'), '"AppState" { "appid" "578080" "name" "PUBG" }');
+
+    const runScenario = async (name: string, treatNoSubscriptionAsError: boolean, ignoreAppIds: number[]) => {
+      const dataDir = path.join(runDir, name);
+      fs.mkdirSync(dataDir, { recursive: true });
+      const settings = defaultSettings('k');
+      settings.maintenance = {
+        ...DEFAULT_MAINTENANCE,
+        steamPath: steam,
+        steamcmdDir: steamcmd,
+        cleanTemp: false,
+        cleanSteamLogins: false,
+        cleanSteamCache: false,
+        cleanUserdata: false,
+        workshop: { enabled: false, mode: 'all', appIds: [] },
+        update: {
+          enabled: true,
+          steamUser: 'club',
+          mode: 'auto',
+          appIds: [],
+          ignoreAppIds,
+          treatNoSubscriptionAsError,
+          validate: false,
+        },
+      };
+      const cfg = buildAgentConfig(settings, SEED_PCS[0]);
+      const calls: string[][] = [];
+      let finishedJob: JobState | null = null;
+      const sys = new Sys(false, log);
+      // Avoid calling real taskkill during closeSteam
+      sys.mutate = async () => ({ code: 0, stdout: '', stderr: '' });
+      const runner = new JobRunner({
+        sys,
+        log,
+        dataDir,
+        getConfig: () => cfg,
+        changed: () => undefined,
+        finished: (j) => (finishedJob = j),
+        schedulePower: () => undefined,
+        steamcmdBusy: () => false,
+        steamcmdOps: {
+          ensureSteamcmd: async () => path.join(steamcmd, 'steamcmd.exe'),
+          freeLinkSlot: async () => true,
+          createJunction: async () => undefined,
+          removeLinkOnly: async () => true,
+          runSteamcmd: async (_exe, args, opts) => {
+            calls.push(args);
+            const lines = [
+              "Success! App '730' already up to date.",
+              "ERROR! Failed to install app '578080' (No subscription)",
+            ];
+            for (const line of lines) opts.onLine?.(line);
+            return { output: `${lines.join('\n')}\n`, code: 0, timedOut: false, aborted: false };
+          },
+        },
+      });
+      runner.start('test');
+      await runner.waitIdle(15_000);
+      return { job: finishedJob!, calls };
+    };
+
+    const [r1, r2, r3] = await Promise.all([
+      runScenario('default', false, [1422450]),
+      runScenario('strict', true, [1422450]),
+      runScenario('all-ignored', false, [730, 578080, 1422450]),
+    ]);
+
+    // 1. Default (treatNoSubscriptionAsError: false) + ignoreAppIds: [1422450]
+    expect(r1.calls).toHaveLength(1);
+    expect(r1.calls[0]).toContain('730');
+    expect(r1.calls[0]).toContain('578080');
+    expect(r1.calls[0]).not.toContain('1422450');
+    expect(r1.job.errors).toBe(0);
+    expect(r1.job.result).toBe('ok');
+    expect(r1.job.steps.find((s) => s.id === 'update')?.status).toBe('ok');
+    expect(r1.job.apps.find((a) => a.appId === 1422450)).toMatchObject({ status: 'ignored' });
+    expect(r1.job.apps.find((a) => a.appId === 730)).toMatchObject({ status: 'ok' });
+    expect(r1.job.apps.find((a) => a.appId === 578080)).toMatchObject({ status: 'skipped_no_subscription' });
+
+    // 2. Strict mode (treatNoSubscriptionAsError: true) marks No subscription as an error
+    expect(r2.job.errors).toBe(1);
+    expect(r2.job.result).toBe('errors');
+    expect(r2.job.steps.find((s) => s.id === 'update')?.status).toBe('error');
+
+    // 3. When all installed games are ignored, SteamCMD is not launched at all
+    expect(r3.calls).toHaveLength(0);
+    expect(r3.job.errors).toBe(0);
+    expect(r3.job.result).toBe('ok');
+    expect(r3.job.apps.every((a) => a.status === 'ignored')).toBe(true);
+  }, 15_000);
 });
 
 describe('agent scheduler', () => {
@@ -191,5 +334,176 @@ describe('agent scheduler', () => {
   });
   it('a new schedule in the past is marked as done', () => {
     expect(AgentScheduler.pastSlotKey(sched, new Date(2026, 10, 21, 11, 10))).toBe('2026-11-21');
+  });
+});
+
+describe('CP866 console decoding, Defender exclusions and LAN beacon', () => {
+  it('decodes CP866 console output buffers into readable UTF-8 text', () => {
+    // "Операция успешно завершена." in CP866 (IBM866):
+    // О=0x8E п=0xAF е=0xA5 р=0xE0 а=0xA0 ц=0xE6 и=0xA8 я=0xEF ' '=0x20
+    // у=0xE3 с=0xE1 п=0xAF е=0xA5 ш=0xE8 н=0xAD о=0xAE ' '=0x20
+    // з=0xA7 а=0xA0 в=0xA2 е=0xA5 р=0xE0 ш=0xE8 е=0xA5 н=0xAD а=0xA0 .=0x2E
+    const cp866Bytes = Buffer.from([
+      0x8e, 0xaf, 0xa5, 0xe0, 0xa0, 0xe6, 0xa8, 0xef, 0x20,
+      0xe3, 0xe1, 0xaf, 0xa5, 0xe8, 0xad, 0xae, 0x20,
+      0xa7, 0xa0, 0xa2, 0xa5, 0xe0, 0xe8, 0xa5, 0xad, 0xa0, 0x2e,
+    ]);
+    expect(decodeCp866(cp866Bytes)).toBe('Операция успешно завершена.');
+    expect(decodeConsoleBuffer(cp866Bytes, 'oem')).toBe('Операция успешно завершена.');
+    expect(decodeConsoleBuffer(Buffer.from('ASCII only 123'), 'oem')).toBe('ASCII only 123');
+    expect(decodeConsoleBuffer(Buffer.from('Успішно виконано (UTF-8)', 'utf8'), 'utf8')).toBe('Успішно виконано (UTF-8)');
+    expect(parseChcpLabel('Текущая кодовая страница: 866\r\n')).toBe('ibm866');
+    expect(parseChcpLabel('Active code page: 65001')).toBe('utf-8');
+  });
+
+  it('registers Windows Defender exclusions once per agent version without throwing on failure', async () => {
+    const dir = path.join(tmp, 'defender-state');
+    const store = new AgentStore(dir);
+    const sys = new Sys(true, log);
+    const script = defenderExclusionScript();
+    for (const p of DEFENDER_EXCLUSION_PATHS) expect(script).toContain(p);
+
+    const ok = await ensureDefenderExclusions(sys, log, store, '0.4.0');
+    expect(ok).toBe(true);
+    expect(store.state.defenderExcludedVersion).toBe('0.4.0');
+
+    // Second call for the same version is a no-op
+    let psCalled = false;
+    sys.powershell = async () => {
+      psCalled = true;
+      return { code: 0, stdout: 'OK', stderr: '' };
+    };
+    await ensureDefenderExclusions(sys, log, store, '0.4.0');
+    expect(psCalled).toBe(false);
+
+    // Next version runs again and swallows Defender errors quietly
+    sys.powershell = async () => ({ code: 0, stdout: 'SKIP: Defender disabled', stderr: '' });
+    const ok2 = await ensureDefenderExclusions(sys, log, store, '0.5.0');
+    expect(ok2).toBe(false);
+    expect(store.state.defenderExcludedVersion).toBe('0.5.0');
+  });
+
+  it('collects non-virtual IPv4 MACs and subnet broadcast addresses for the discovery beacon', () => {
+    const info = collectActiveLanInfo({
+      'Ethernet': [
+        {
+          address: '10.70.4.112',
+          netmask: '255.255.255.0',
+          family: 'IPv4',
+          mac: '30:56:0F:3E:93:88',
+          internal: false,
+          cidr: '10.70.4.112/24',
+        },
+      ],
+      'vEthernet (WSL)': [
+        {
+          address: '172.24.0.1',
+          netmask: '255.255.240.0',
+          family: 'IPv4',
+          mac: '00:15:5d:aa:bb:cc',
+          internal: false,
+          cidr: '172.24.0.1/20',
+        },
+      ],
+    });
+    expect(info.macs).toEqual(['30:56:0f:3e:93:88']);
+    expect(info.broadcasts).toEqual(['255.255.255.255', '10.70.4.255']);
+  });
+});
+
+describe('HardwareHealth parsers and ExtraUpdaters network idle wait', () => {
+  it('parses GPU temp, monitor refresh rate, RAM and SSD SMART JSON (single object & array)', () => {
+    expect(parseNvidiaTemp('64\r\n')).toBe(64);
+    expect(parseNvidiaTemp('not-installed')).toBeNull();
+    expect(parseRefreshRate('60\r\n240\r\n144\r\n')).toBe(240);
+    expect(parseRefreshRate('')).toBeNull();
+    expect(parseRamTotalGb(String(32 * 1024 ** 3))).toBe(32);
+
+    const single = parseSsdJson('{"Model":"Samsung 980 PRO","HealthStatus":"Healthy","Wear":8,"Temp":41}');
+    expect(single).toEqual([{ model: 'Samsung 980 PRO', healthStatus: 'Healthy', wearPct: 8, tempC: 41 }]);
+
+    const multi = parseSsdJson('[{"Model":"NVMe1","HealthStatus":"Healthy","Wear":15,"Temp":39},{"Model":"NVMe2","HealthStatus":"Warning","Wear":92,"Temp":null}]');
+    expect(multi).toHaveLength(2);
+    expect(multi[1]).toEqual({ model: 'NVMe2', healthStatus: 'Warning', wearPct: 92, tempC: null });
+    expect(parseSsdJson('')).toEqual([]);
+
+    expect(
+      healthChanged(
+        { ramTotalGb: 32, refreshRateHz: 240, ssd: single, gpuTempC: 60, cpuTempC: null },
+        { ramTotalGb: 32, refreshRateHz: 240, ssd: single, gpuTempC: 61, cpuTempC: null },
+      ),
+    ).toBe(false);
+    expect(
+      healthChanged(
+        { ramTotalGb: 32, refreshRateHz: 240, ssd: single, gpuTempC: 60, cpuTempC: null },
+        { ramTotalGb: 32, refreshRateHz: 60, ssd: single, gpuTempC: 60, cpuTempC: null },
+      ),
+    ).toBe(true);
+  });
+
+  it('waits minWaitMs, stays active while downloading, and finishes on 60s continuous idle or maxWaitMs timeout', async () => {
+    expect(splitArgs('--launch-product=valorant "hello world"')).toEqual(['--launch-product=valorant', 'hello world']);
+
+    // 1. Download active (500 KB/s for 2 polls), then idle (<200 KB/s) for 60s
+    let fakeNow = 0;
+    let totalBytes = 0;
+    const speedsKbPerSec = [600, 500, 50, 40, 20, 10]; // first 2 ticks busy, next 4 ticks (60s) idle
+    let idx = 0;
+    const resIdle = await waitForNetworkIdle({
+      minWaitMs: 180_000,
+      maxWaitMs: 1_200_000,
+      idleKbps: 200,
+      pollMs: 15_000,
+      idleConfirmMs: 60_000,
+      nowFn: () => fakeNow,
+      sleepFn: async (ms) => {
+        fakeNow += ms;
+        if (fakeNow > 180_000) {
+          const kbps = speedsKbPerSec[Math.min(idx++, speedsKbPerSec.length - 1)];
+          totalBytes += kbps * 1024 * (ms / 1000);
+        }
+      },
+      readRxBytes: async () => totalBytes,
+    });
+    expect(resIdle.reason).toBe('idle');
+    expect(resIdle.peakKbps).toBeGreaterThanOrEqual(500);
+    // 180s minWait + 30s active + 60s continuous idle = 270s
+    expect(resIdle.elapsedMs).toBe(270_000);
+
+    // 2. Continuous download exceeds maxWaitMs -> timeout
+    let now2 = 0;
+    let bytes2 = 0;
+    const resTimeout = await waitForNetworkIdle({
+      minWaitMs: 60_000,
+      maxWaitMs: 120_000,
+      idleKbps: 200,
+      pollMs: 15_000,
+      idleConfirmMs: 60_000,
+      nowFn: () => now2,
+      sleepFn: async (ms) => {
+        now2 += ms;
+        bytes2 += 1000 * 1024 * (ms / 1000);
+      },
+      readRxBytes: async () => bytes2,
+    });
+    expect(resTimeout.reason).toBe('timeout');
+    expect(resTimeout.elapsedMs).toBe(120_000);
+
+    // 3. Aborted early
+    const ac = new AbortController();
+    ac.abort();
+    const resAbort = await waitForNetworkIdle({
+      minWaitMs: 60_000,
+      maxWaitMs: 120_000,
+      idleKbps: 200,
+      readRxBytes: async () => 0,
+      signal: ac.signal,
+    });
+    expect(resAbort.reason).toBe('aborted');
+
+    // 4. planSteps includes extraUpdaters when enabled
+    expect(
+      planSteps({ ...DEFAULT_MAINTENANCE, extraUpdaters: { ...DEFAULT_MAINTENANCE.extraUpdaters, enabled: true } }, 'scheduled'),
+    ).toEqual(['closeSteam', 'cleanTemp', 'steamLogins', 'steamCache', 'workshop', 'update', 'extraUpdaters', 'after']);
   });
 });

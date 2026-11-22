@@ -198,6 +198,8 @@ export class AgentServer {
         return a.quickClean('manual', args.force === true);
       case 'agent.selfUpdate':
         return a.selfUpdate({ url: String(args.url ?? ''), sha256: String(args.sha256 ?? ''), version: String(args.version ?? '') });
+      case 'time.sync':
+        return a.syncTime();
       default:
         throw new Error(`Невідома команда: ${String(cmd)}`);
     }

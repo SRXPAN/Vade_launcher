@@ -1,4 +1,12 @@
-import { deriveDisplayStatus, worstDiskLevel, type AlertSettings, type DiskLevel, type PcRuntime } from '@vade/protocol';
+import {
+  deriveDisplayStatus,
+  isClockDrifted,
+  worstDiskLevel,
+  worstHealthLevel,
+  type AlertSettings,
+  type DiskLevel,
+  type PcRuntime,
+} from '@vade/protocol';
 import { occupancyOf } from '../format';
 
 /**
@@ -68,6 +76,17 @@ export function mapTone(rt: PcRuntime | undefined, exists: boolean): MapTone {
 /** Worst disk of an online PC, 'ok' when unknown. */
 export function diskAlert(rt: PcRuntime | undefined, alerts: AlertSettings): DiskLevel {
   return rt?.link === 'online' ? worstDiskLevel(rt.status?.disks, alerts) : 'ok';
+}
+
+/** Combined alert indicator for the PC map icon (disks, hardware health, and clock drift). */
+export function pcAlertLevel(rt: PcRuntime | undefined, alerts: AlertSettings, zone?: string): DiskLevel {
+  if (rt?.link !== 'online') return 'ok';
+  const disk = worstDiskLevel(rt.status?.disks, alerts);
+  if (disk === 'crit') return 'crit';
+  const hw = worstHealthLevel(rt.status?.health, alerts, zone);
+  if (hw === 'crit') return 'crit';
+  if (disk === 'warn' || hw === 'warn' || isClockDrifted(rt.status?.agentTimeMs)) return 'warn';
+  return 'ok';
 }
 
 /** Download progress 0..1 of a running update, null when there is none. */

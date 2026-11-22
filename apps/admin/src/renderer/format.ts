@@ -42,6 +42,7 @@ export const ACTIONS: Record<PcAction, ActionMeta> = {
     confirm:
       'Буде закрито Steam, Discord і браузери, видалено вхід у Steam і сесії браузерів (куки, збережені паролі, вкладки). Кеш, ігри й Майстерня не чіпаються.',
   },
+  'sync-time': { label: 'Синхронізувати час' },
 };
 
 export const QUEUE_STATE_LABEL: Record<QueueItemStateUi, string> = {
@@ -65,6 +66,7 @@ export const APP_STATUS: Record<AppUpdateStatus, { label: string; cls: string }>
   pending: { label: 'в черзі', cls: 's-pending' },
   updating: { label: 'оновлюється', cls: 's-running' },
   ok: { label: 'OK', cls: 's-ok' },
+  ignored: { label: 'Ігноровано', cls: 's-skipped' },
   skipped_no_subscription: { label: 'Skipped - No subscription', cls: 's-skipped' },
   error: { label: 'ERROR', cls: 's-error' },
   login_error: { label: 'LOGIN ERROR', cls: 's-error' },

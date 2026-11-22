@@ -2,7 +2,10 @@ import type {
   AlertSettings,
   AppSettings,
   BrowserId,
+  CleanLaunchersSettings,
   DetectorSettings,
+  ExtraUpdatersConfig,
+  LauncherId,
   PostSessionCleanSettings,
   MaintenanceConfig,
   Occupancy,
@@ -12,7 +15,37 @@ import type {
   SiteSettings,
   StepId,
 } from './types';
-import { DEFAULT_AGENT_PORT } from './types';
+import { DEFAULT_AGENT_PORT, DEFAULT_DISCOVERY_PORT } from './types';
+
+export const DEFAULT_EXTRA_UPDATERS: ExtraUpdatersConfig = {
+  enabled: false,
+  apps: [
+    {
+      id: 'riot',
+      name: 'Riot Client',
+      exePath: 'C:\\Riot Games\\Riot Client\\RiotClientServices.exe',
+      args: '--launch-product=valorant --launch-patchline=live',
+      enabled: true,
+    },
+    {
+      id: 'epic',
+      name: 'Epic Games Launcher',
+      exePath: 'C:\\Program Files (x86)\\Epic Games\\Launcher\\Portal\\Binaries\\Win32\\EpicGamesLauncher.exe',
+      args: '-silent',
+      enabled: true,
+    },
+    {
+      id: 'faceit',
+      name: 'FACEIT AC',
+      exePath: 'C:\\Program Files\\FACEIT AC\\faceitclient.exe',
+      args: '',
+      enabled: true,
+    },
+  ],
+  minWaitMin: 3,
+  maxWaitMin: 20,
+  idleKbps: 200,
+};
 
 /** Mirrors the SETTINGS block of the old club_night_sleep.bat */
 export const DEFAULT_MAINTENANCE: MaintenanceConfig = {
@@ -29,8 +62,11 @@ export const DEFAULT_MAINTENANCE: MaintenanceConfig = {
     steamUser: 'vadekrarow',
     mode: 'auto',
     appIds: [730, 570, 578080],
+    ignoreAppIds: [],
+    treatNoSubscriptionAsError: false,
     validate: false,
   },
+  extraUpdaters: structuredClone(DEFAULT_EXTRA_UPDATERS),
   after: { action: 'hibernate', delaySec: 30 },
 };
 
@@ -74,6 +110,35 @@ export const BROWSER_PROCESSES: Record<BrowserId, string> = {
   firefox: 'firefox.exe',
 };
 
+export const LAUNCHER_IDS: LauncherId[] = ['riot', 'epic', 'battlenet', 'ea', 'discord', 'telegram'];
+
+export const LAUNCHER_TITLES: Record<LauncherId, string> = {
+  riot: 'Riot Client',
+  epic: 'Epic Games',
+  battlenet: 'Battle.net',
+  ea: 'EA App',
+  discord: 'Discord',
+  telegram: 'Telegram Desktop',
+};
+
+export const LAUNCHER_PROCESSES: Record<LauncherId, string[]> = {
+  riot: ['RiotClientServices.exe', 'RiotClientUx.exe', 'RiotClientUxRender.exe'],
+  epic: ['EpicGamesLauncher.exe'],
+  battlenet: ['Battle.net.exe'],
+  ea: ['EADesktop.exe', 'EABackgroundService.exe'],
+  discord: ['Discord.exe'],
+  telegram: ['Telegram.exe'],
+};
+
+export const DEFAULT_CLEAN_LAUNCHERS: CleanLaunchersSettings = {
+  riot: true,
+  epic: true,
+  battlenet: true,
+  ea: true,
+  discord: true,
+  telegram: false,
+};
+
 export const DEFAULT_POST_SESSION_CLEAN: PostSessionCleanSettings = {
   enabled: true,
   delaySec: 45,
@@ -81,9 +146,17 @@ export const DEFAULT_POST_SESSION_CLEAN: PostSessionCleanSettings = {
   closeApps: ['steam.exe', 'steamwebhelper.exe', 'discord.exe', 'chrome.exe', 'msedge.exe', 'opera.exe'],
   cleanBrowsers: true,
   browsers: [...BROWSER_IDS],
+  cleanLaunchers: { ...DEFAULT_CLEAN_LAUNCHERS },
 };
 
-export const DEFAULT_ALERTS: AlertSettings = { diskWarnGb: 30, diskCritGb: 15 };
+export const DEFAULT_ALERTS: AlertSettings = {
+  diskWarnGb: 30,
+  diskCritGb: 15,
+  minRamGb: 32,
+  minRefreshRateHz: 240,
+  maxGpuTempC: 85,
+  maxSsdWearPct: 80,
+};
 
 /** Changes only + heartbeat every 10 min: fits Cloudflare KV Free (1000 writes/day). */
 export const DEFAULT_SITE: SiteSettings = {
@@ -104,6 +177,8 @@ export function defaultSettings(clubKey: string): AppSettings {
       broadcast: '10.70.4.255',
       agentPort: DEFAULT_AGENT_PORT,
       wolPort: 9,
+      discoveryEnabled: true,
+      discoveryPort: DEFAULT_DISCOVERY_PORT,
     },
     schedule: {
       enabled: true,
@@ -114,6 +189,7 @@ export function defaultSettings(clubKey: string): AppSettings {
       mode: 'staggered',
       maxConcurrentUpdates: 3,
       zoneOrder: [],
+      autoSyncTime: true,
     },
     maintenance: structuredClone(DEFAULT_MAINTENANCE),
     detector: structuredClone(DEFAULT_DETECTOR),
@@ -121,7 +197,7 @@ export function defaultSettings(clubKey: string): AppSettings {
     alerts: { ...DEFAULT_ALERTS },
     security: { clubKey },
     site: { ...DEFAULT_SITE },
-    ui: { autostart: true, closeToTray: true, theme: 'system' },
+    ui: { autostart: true, closeToTray: true, theme: 'system', historyRetentionDays: 14 },
   };
 }
 
@@ -185,6 +261,7 @@ export const STEP_TITLES: Record<StepId, string> = {
   userdata: 'Видалення userdata',
   workshop: 'Очищення Майстерні',
   update: 'Оновлення ігор (SteamCMD)',
+  extraUpdaters: 'Оновлення лаунчерів (поза Steam)',
   after: 'Дія після завершення',
 };
 

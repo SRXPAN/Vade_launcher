@@ -2,12 +2,13 @@
  * Post-session quick clean (2–3 s): close apps, remove Steam sign-in data and browser sessions.
  * Unlike the night job it never touches caches, games, Workshop content and never runs SteamCMD.
  */
-import { BROWSER_PROCESSES, BROWSER_TITLES, type PostSessionCleanSettings, type QuickCleanResult } from '@vade/protocol';
+import { BROWSER_PROCESSES, BROWSER_TITLES, LAUNCHER_IDS, LAUNCHER_PROCESSES, LAUNCHER_TITLES, type PostSessionCleanSettings, type QuickCleanResult } from '@vade/protocol';
 import type { Sys } from '../sys';
 import { sleep } from '../util';
 import { EXE, userProfileDirs } from '../win/paths';
 import { cleanSteamRegistryAllUsers } from '../win/registry';
 import { cleanBrowserSessions } from './browsers';
+import { cleanLauncherSessions } from './launchers';
 import { removeSteamLoginFiles } from './steps';
 
 export interface QuickCleanDeps {
@@ -30,9 +31,16 @@ async function killWithTaskkill(sys: Sys, names: string[]): Promise<number> {
   return r.stdout.split(/\r?\n/).filter((l) => l.trim()).length;
 }
 
-/** closeApps plus the processes of the browsers that will be cleaned, without duplicates. */
+/** closeApps plus the processes of enabled browsers and launchers, without duplicates. */
 export function processesToClose(s: PostSessionCleanSettings): string[] {
-  const names = [...s.closeApps, ...(s.cleanBrowsers ? s.browsers.map((b) => BROWSER_PROCESSES[b]) : [])];
+  const launcherProcs = s.cleanLaunchers
+    ? LAUNCHER_IDS.flatMap((id) => (s.cleanLaunchers[id] ? LAUNCHER_PROCESSES[id] : []))
+    : [];
+  const names = [
+    ...s.closeApps,
+    ...(s.cleanBrowsers ? s.browsers.map((b) => BROWSER_PROCESSES[b]) : []),
+    ...launcherProcs,
+  ];
   const out: string[] = [];
   for (const n of names) {
     const v = n.trim().toLowerCase().endsWith('.exe') ? n.trim() : `${n.trim()}.exe`;
@@ -77,6 +85,18 @@ export async function runQuickClean(d: QuickCleanDeps): Promise<QuickCleanResult
         ? `браузери (${b.found.map((x) => BROWSER_TITLES[x]).join(', ')}): профілів ${b.profiles}, видалено ${b.removed}${b.failed ? `, зайнятих ${b.failed}` : ''}`
         : 'браузерів не знайдено',
     );
+  }
+
+  // 4. Launcher & messenger sessions (tokens / web caches, never touching installed games).
+  if (s.cleanLaunchers && LAUNCHER_IDS.some((id) => s.cleanLaunchers[id])) {
+    const l = await cleanLauncherSessions(sys, userDirs, s.cleanLaunchers);
+    removed += l.removed;
+    failed += l.failed;
+    if (l.cleaned.length > 0 || l.failed > 0) {
+      parts.push(
+        `лаунчери (${l.cleaned.map((id) => LAUNCHER_TITLES[id]).join(', ') || '—'}): видалено ${l.removed}${l.failed ? `, зайнятих ${l.failed}` : ''}`,
+      );
+    }
   }
 
   const ms = Date.now() - started;

@@ -7,6 +7,7 @@ import { IPC, type ActionOptions, type AgentUpdateRequest, type PcAction, type Q
 import { sanitizeMapLayout } from '../shared/mapLayout';
 import { agentPackageAvailable, agentPackageDir, exportAgentPackage } from './agentPackage';
 import { AgentUpdater, fileSource, readBundledSource } from './agentUpdater';
+import { AdminDiscoveryListener } from './discovery';
 import { AgentHub } from './hub';
 import { appIcon } from './icon';
 import { MaintenanceQueue } from './maintenanceQueue';
@@ -16,20 +17,27 @@ import { SitePublisher } from './sitePublisher';
 import { AdminStore } from './store';
 
 const DEV_URL = process.env.VADE_DEV_URL;
-const ACTIONS: PcAction[] = ['wake', 'test', 'run', 'cancel', 'sleep', 'hibernate', 'shutdown', 'restart', 'cancel-power', 'clean-logins'];
+const ACTIONS: PcAction[] = ['wake', 'test', 'run', 'cancel', 'sleep', 'hibernate', 'shutdown', 'restart', 'cancel-power', 'clean-logins', 'sync-time'];
 
 app.setName('Vade Launcher'); // userData = %APPDATA%\Vade Launcher
 app.setAppUserModelId('ua.vade.launcher');
 
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
-let quitting = false;
+let isQuitting = false;
 let trayHintShown = false;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', (_e, argv) => {
+    if (argv.includes('--quit') || argv.includes('--updated')) {
+      isQuitting = true;
+      app.quit();
+      return;
+    }
+    showWindow();
+  });
   void app.whenReady().then(start);
 }
 
@@ -50,6 +58,7 @@ function start(): void {
   const store = new AdminStore(path.join(app.getPath('userData'), 'data'));
   nativeTheme.themeSource = store.settings.ui.theme;
   const hub = new AgentHub(store);
+  const discovery = new AdminDiscoveryListener(store, hub);
   const queue = new MaintenanceQueue({
     pcs: () => store.pcs,
     runtime: (id) => hub.runtime(id),
@@ -82,6 +91,7 @@ function start(): void {
   });
   hub.on('logs', (b) => win?.webContents.send(IPC.logsAppend, b));
   hub.on('pcsChanged', (pcs) => win?.webContents.send(IPC.pcsChanged, pcs));
+  hub.on('historyChanged', (h) => win?.webContents.send(IPC.historyUpdate, h));
   site.on('status', (s) => win?.webContents.send(IPC.siteUpdate, s));
   queue.on('status', (s) => win?.webContents.send(IPC.queueUpdate, s));
   updater.on('status', (s) => win?.webContents.send(IPC.agentUpdateUpdate, s));
@@ -101,6 +111,7 @@ function start(): void {
     if (prev.ui.theme !== saved.ui.theme) nativeTheme.themeSource = saved.ui.theme;
     hub.sync();
     hub.pushConfigAll();
+    discovery.reconfigure();
     // Only site settings changes force a new request; other edits must not spend the daily budget.
     if (JSON.stringify(prev.site) !== JSON.stringify(saved.site)) site.reconfigure();
     return saved;
@@ -160,6 +171,7 @@ function start(): void {
     }
   });
   ipcMain.handle(IPC.runtimesGet, () => hub.runtimes());
+  ipcMain.handle(IPC.historyList, () => store.listHistory());
   ipcMain.handle(IPC.actionRun, (_e, action: PcAction, ids: number[], opts?: ActionOptions) => {
     if (!ACTIONS.includes(action)) throw new Error(`Невідома дія ${action}`);
     return hub.runAction(action, ids.map(Number), { force: opts?.force === true });
@@ -244,7 +256,7 @@ function start(): void {
     if (input.type === 'keyDown' && input.key === 'F5') win?.webContents.reload();
   });
   win.on('close', (e) => {
-    if (quitting || !store.settings.ui.closeToTray) return;
+    if (isQuitting || !store.settings.ui.closeToTray) return;
     e.preventDefault();
     win?.hide();
     if (!trayHintShown && tray) {
@@ -256,11 +268,36 @@ function start(): void {
       });
     }
   });
+  win.on('session-end', () => {
+    isQuitting = true;
+  });
   win.once('ready-to-show', () => {
     if (!process.argv.includes('--hidden')) win?.show();
   });
   if (DEV_URL) void win.loadURL(DEV_URL);
   else void win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  let cleanedUp = false;
+  const cleanupAll = () => {
+    isQuitting = true;
+    if (cleanedUp) return;
+    cleanedUp = true;
+    if (tray) {
+      try {
+        tray.destroy();
+      } catch {
+        // ignore
+      }
+      tray = null;
+    }
+    discovery.stop();
+    wol.stop();
+    site.stop();
+    queue.cancel();
+    updater.cancel();
+    void updater.server.stop();
+    hub.stopAll();
+  };
 
   /* ---------------- tray ---------------- */
   tray = new Tray(appIcon(16));
@@ -272,7 +309,7 @@ function start(): void {
       {
         label: 'Вийти (нічний WoL зупиниться)',
         click: () => {
-          quitting = true;
+          cleanupAll();
           app.quit();
         },
       },
@@ -281,20 +318,24 @@ function start(): void {
   tray.on('click', showWindow);
 
   hub.sync();
+  discovery.start();
   wol.start();
   site.start();
   applyAutostart(store.settings.ui.autostart);
 
   app.on('before-quit', () => {
-    quitting = true;
-    wol.stop();
-    site.stop();
-    queue.cancel();
-    updater.cancel();
-    void updater.server.stop();
-    hub.stopAll();
+    cleanupAll();
   });
+  app.on('will-quit', () => {
+    cleanupAll();
+  });
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) {
+    process.on(sig, () => {
+      cleanupAll();
+      app.quit();
+    });
+  }
   app.on('window-all-closed', () => {
-    if (quitting || !store.settings.ui.closeToTray) app.quit();
+    if (isQuitting || !store.settings.ui.closeToTray) app.quit();
   });
 }

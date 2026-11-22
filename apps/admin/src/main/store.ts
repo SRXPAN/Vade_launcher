@@ -2,18 +2,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   BROWSER_IDS,
+  DEFAULT_CLEAN_LAUNCHERS,
   defaultSettings,
   isValidIPv4,
+  LAUNCHER_IDS,
   normalizeMac,
   parseCidr,
   parseHHMM,
   SEED_PCS,
   validatePc,
   type AppSettings,
+  type ExtraUpdaterApp,
+  type HealthThresholds,
+  type JobHistoryEntry,
+  type JobState,
   type PcRecord,
 } from '@vade/protocol';
 import { newClubKey } from '@vade/protocol/auth';
 import { defaultMapLayout, sanitizeMapLayout, type MapLayout } from '../shared/mapLayout';
+import { HistoryStore } from './history';
 
 function readJson<T>(file: string): T | null {
   try {
@@ -85,12 +92,47 @@ export function sanitizeSettings(input: AppSettings, current: AppSettings): AppS
   s.schedule.mode = s.schedule.mode === 'queue' ? 'queue' : 'staggered';
   s.schedule.maxConcurrentUpdates = clamp(s.schedule.maxConcurrentUpdates, 1, 10, 3);
   s.schedule.zoneOrder = cleanNames(s.schedule.zoneOrder);
+  s.schedule.autoSyncTime = s.schedule.autoSyncTime !== false;
   const p = s.postSessionClean;
   p.delaySec = clamp(p.delaySec, 0, 600, 45);
   p.closeApps = cleanNames(p.closeApps);
   p.browsers = BROWSER_IDS.filter((b) => p.browsers.includes(b));
+  const rawLaunchers = (p.cleanLaunchers ?? {}) as Record<string, unknown>;
+  p.cleanLaunchers = {
+    riot: typeof rawLaunchers.riot === 'boolean' ? rawLaunchers.riot : DEFAULT_CLEAN_LAUNCHERS.riot,
+    epic: typeof rawLaunchers.epic === 'boolean' ? rawLaunchers.epic : DEFAULT_CLEAN_LAUNCHERS.epic,
+    battlenet: typeof rawLaunchers.battlenet === 'boolean' ? rawLaunchers.battlenet : DEFAULT_CLEAN_LAUNCHERS.battlenet,
+    ea: typeof rawLaunchers.ea === 'boolean' ? rawLaunchers.ea : DEFAULT_CLEAN_LAUNCHERS.ea,
+    discord: typeof rawLaunchers.discord === 'boolean' ? rawLaunchers.discord : DEFAULT_CLEAN_LAUNCHERS.discord,
+    telegram: typeof rawLaunchers.telegram === 'boolean' ? rawLaunchers.telegram : DEFAULT_CLEAN_LAUNCHERS.telegram,
+  };
+  for (const id of LAUNCHER_IDS) {
+    if (typeof p.cleanLaunchers[id] !== 'boolean') p.cleanLaunchers[id] = DEFAULT_CLEAN_LAUNCHERS[id];
+  }
   s.alerts.diskWarnGb = clamp(s.alerts.diskWarnGb, 1, 100_000, 30);
   s.alerts.diskCritGb = Math.min(clamp(s.alerts.diskCritGb, 1, 100_000, 15), s.alerts.diskWarnGb);
+  s.alerts.minRamGb = clamp(s.alerts.minRamGb, 0, 1024, 32);
+  s.alerts.minRefreshRateHz = clamp(s.alerts.minRefreshRateHz, 0, 1000, 240);
+  s.alerts.maxGpuTempC = clamp(s.alerts.maxGpuTempC, 0, 120, 85);
+  s.alerts.maxSsdWearPct = clamp(s.alerts.maxSsdWearPct, 0, 100, 80);
+  if (input.alerts?.zoneThresholds && typeof input.alerts.zoneThresholds === 'object') {
+    const cleanZones: Record<string, Partial<HealthThresholds>> = {};
+    for (const [z, raw] of Object.entries(input.alerts.zoneThresholds)) {
+      const zoneName = z.trim();
+      if (!zoneName || !raw || typeof raw !== 'object') continue;
+      const entry: Partial<HealthThresholds> = {};
+      if (typeof raw.minRamGb === 'number' && Number.isFinite(raw.minRamGb)) entry.minRamGb = clamp(raw.minRamGb, 0, 1024, 32);
+      if (typeof raw.minRefreshRateHz === 'number' && Number.isFinite(raw.minRefreshRateHz)) {
+        entry.minRefreshRateHz = clamp(raw.minRefreshRateHz, 0, 1000, 240);
+      }
+      if (typeof raw.maxGpuTempC === 'number' && Number.isFinite(raw.maxGpuTempC)) entry.maxGpuTempC = clamp(raw.maxGpuTempC, 0, 120, 85);
+      if (typeof raw.maxSsdWearPct === 'number' && Number.isFinite(raw.maxSsdWearPct)) entry.maxSsdWearPct = clamp(raw.maxSsdWearPct, 0, 100, 80);
+      if (Object.keys(entry).length) cleanZones[zoneName] = entry;
+    }
+    s.alerts.zoneThresholds = Object.keys(cleanZones).length ? cleanZones : undefined;
+  } else {
+    s.alerts.zoneThresholds = undefined;
+  }
   s.site.token = s.site.token.trim();
   s.site.heartbeatSec = clamp(s.site.heartbeatSec, 15, 86_400, 600);
   s.site.debounceSec = clamp(s.site.debounceSec, 0, 60, 2);
@@ -101,14 +143,36 @@ export function sanitizeSettings(input: AppSettings, current: AppSettings): AppS
   s.schedule.catchUpMin = clamp(s.schedule.catchUpMin, 0, 240, 30);
   s.network.agentPort = clamp(s.network.agentPort, 1, 65535, 7420);
   s.network.wolPort = clamp(s.network.wolPort, 1, 65535, 9);
+  s.network.discoveryEnabled = s.network.discoveryEnabled !== false;
+  s.network.discoveryPort = clamp(s.network.discoveryPort, 1, 65535, 7422);
   s.maintenance.after.delaySec = clamp(s.maintenance.after.delaySec, 30, 60, 30);
   s.maintenance.update.appIds = cleanIds(s.maintenance.update.appIds);
+  s.maintenance.update.ignoreAppIds = cleanIds(s.maintenance.update.ignoreAppIds);
+  s.maintenance.update.treatNoSubscriptionAsError = s.maintenance.update.treatNoSubscriptionAsError === true;
   s.maintenance.workshop.appIds = cleanIds(s.maintenance.workshop.appIds);
   s.maintenance.update.steamUser = s.maintenance.update.steamUser.trim();
   s.maintenance.steamPath = s.maintenance.steamPath.trim().replace(/\\+$/, '');
   s.maintenance.steamcmdDir = s.maintenance.steamcmdDir.trim().replace(/\\+$/, '');
+  const eu = s.maintenance.extraUpdaters;
+  eu.enabled = eu.enabled === true;
+  eu.minWaitMin = clamp(eu.minWaitMin, 0, 60, 3);
+  eu.maxWaitMin = Math.max(eu.minWaitMin, clamp(eu.maxWaitMin, 1, 180, 20));
+  eu.idleKbps = clamp(eu.idleKbps, 10, 100_000, 200);
+  const rawApps = Array.isArray(input.maintenance?.extraUpdaters?.apps) ? input.maintenance.extraUpdaters.apps : eu.apps;
+  const cleanApps: ExtraUpdaterApp[] = [];
+  for (const a of Array.isArray(rawApps) ? rawApps : []) {
+    if (!a || typeof a !== 'object') continue;
+    const name = String(a.name ?? '').trim().slice(0, 80);
+    const exePath = String(a.exePath ?? '').trim().slice(0, 400);
+    if (!name && !exePath) continue;
+    const id = String(a.id ?? '').trim().slice(0, 40) || `app-${cleanApps.length + 1}`;
+    const args = typeof a.args === 'string' ? a.args.trim().slice(0, 400) : '';
+    cleanApps.push({ id, name: name || 'Client', exePath, ...(args ? { args } : {}), enabled: a.enabled !== false });
+  }
+  eu.apps = cleanApps.slice(0, 30);
   s.security.clubKey = s.security.clubKey.trim();
   s.ui.theme = s.ui.theme === 'light' || s.ui.theme === 'dark' || s.ui.theme === 'system' ? s.ui.theme : 'system';
+  s.ui.historyRetentionDays = clamp(s.ui.historyRetentionDays, 1, 365, 14);
   return s;
 }
 
@@ -126,20 +190,23 @@ function loadMapLayout(file: string): { layout: MapLayout; fresh: boolean } {
   return { layout: defaultMapLayout(), fresh: !fs.existsSync(file) };
 }
 
-/** settings.json + pcs.json + map_layout.json in %APPDATA%\Vade Launcher\data */
+/** settings.json + pcs.json + map_layout.json + history.json in %APPDATA%\Vade Launcher\data */
 export class AdminStore {
   settings: AppSettings;
   pcs: PcRecord[];
   mapLayout: MapLayout;
+  readonly history: HistoryStore;
   readonly settingsFile: string;
   readonly pcsFile: string;
   readonly mapFile: string;
+  readonly historyFile: string;
 
   constructor(readonly dir: string) {
     fs.mkdirSync(dir, { recursive: true });
     this.settingsFile = path.join(dir, 'settings.json');
     this.pcsFile = path.join(dir, 'pcs.json');
     this.mapFile = path.join(dir, 'map_layout.json');
+    this.historyFile = path.join(dir, 'history.json');
 
     const map = loadMapLayout(this.mapFile);
     this.mapLayout = map.layout;
@@ -154,12 +221,23 @@ export class AdminStore {
     this.pcs = Array.isArray(pcs) ? pcs : structuredClone(SEED_PCS);
     if (!pcs) writeJson(this.pcsFile, this.pcs);
     this.sortPcs();
+
+    this.history = new HistoryStore(this.historyFile, this.settings.ui.historyRetentionDays);
   }
 
   saveSettings(next: AppSettings): AppSettings {
     this.settings = sanitizeSettings(next, this.settings);
     writeJson(this.settingsFile, this.settings);
+    this.history.prune(this.settings.ui.historyRetentionDays);
     return this.settings;
+  }
+
+  listHistory(): JobHistoryEntry[] {
+    return this.history.entries;
+  }
+
+  recordJobHistory(pcId: number, job: JobState): boolean {
+    return this.history.record(pcId, job, this.settings.ui.historyRetentionDays);
   }
 
   saveMapLayout(next: unknown): MapLayout {
@@ -212,6 +290,18 @@ export class AdminStore {
     if (!pc) return;
     pc.mac = mac;
     writeJson(this.pcsFile, this.pcs);
+  }
+
+  /** Updates a PC's IP in pcs.json when a UDP discovery beacon reports a new DHCP address for its MAC. */
+  setIp(id: number, ip: string): boolean {
+    const clean = ip.trim();
+    if (!isValidIPv4(clean)) return false;
+    const pc = this.pcs.find((p) => p.id === id);
+    if (!pc || pc.ip === clean) return false;
+    if (this.pcs.some((other) => other.id !== id && other.ip === clean)) return false;
+    pc.ip = clean;
+    writeJson(this.pcsFile, this.pcs);
+    return true;
   }
 
   private sortPcs(): void {

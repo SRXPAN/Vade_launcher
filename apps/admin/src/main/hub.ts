@@ -2,8 +2,11 @@ import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import {
   buildAgentConfig,
+  isClockDrifted,
   normalizeMac,
   type AgentInfo,
+  type AgentStatus,
+  type JobHistoryEntry,
   type JobMode,
   type LogLevel,
   type PcRecord,
@@ -26,6 +29,7 @@ export interface HubEvents {
   runtimes: [PcRuntime[]];
   logs: [LogBatch[]];
   pcsChanged: [PcRecord[]];
+  historyChanged: [JobHistoryEntry[]];
 }
 
 /**
@@ -38,6 +42,7 @@ export class AgentHub extends EventEmitter<HubEvents> {
   private readonly logs = new Map<number, UiLogLine[]>();
   private readonly lastAgentTs = new Map<number, string>();
   private readonly expectSleep = new Set<number>();
+  private readonly lastTimeSync = new Map<number, number>();
   private pendingLogs: LogBatch[] = [];
   private rtTimer: NodeJS.Timeout | null = null;
   private logTimer: NodeJS.Timeout | null = null;
@@ -125,6 +130,8 @@ export class AgentHub extends EventEmitter<HubEvents> {
       r.lastSeen = new Date().toISOString();
       this.adminLog(id, 'info', `Агент на зв'язку: ${info.hostname}, версія ${info.version}${status.dryRun ? ' (DRY-RUN)' : ''}`);
       this.checkMac(id, info);
+      this.recordStatusJob(id, status);
+      this.maybeAutoSyncTime(id, status, link);
       this.pushRuntimes();
       void this.afterHello(id, link);
     });
@@ -132,6 +139,8 @@ export class AgentHub extends EventEmitter<HubEvents> {
       const r = this.runtime(id);
       r.status = s;
       r.lastSeen = new Date().toISOString();
+      this.recordStatusJob(id, s);
+      this.maybeAutoSyncTime(id, s, link);
       this.pushRuntimes();
     });
     link.on('log', (line) => this.appendAgentLines(id, [line]));
@@ -140,6 +149,30 @@ export class AgentHub extends EventEmitter<HubEvents> {
       else this.expectSleep.delete(id);
     });
     return link;
+  }
+
+  private recordStatusJob(id: number, s: AgentStatus): void {
+    if (s.lastJob?.finishedAt && s.lastJob?.result && this.store.recordJobHistory(id, s.lastJob)) {
+      this.emit('historyChanged', this.store.listHistory());
+    }
+  }
+
+  private maybeAutoSyncTime(id: number, s: AgentStatus, link: AgentLink): void {
+    if (!this.store.settings.schedule.autoSyncTime) return;
+    if (!isClockDrifted(s.agentTimeMs)) return;
+    const last = this.lastTimeSync.get(id) ?? 0;
+    if (Date.now() - last < 3600_000) return;
+    this.lastTimeSync.set(id, Date.now());
+    this.adminLog(id, 'warn', 'Виявлено розбіжність годинника (> 2 хв) — автоматична синхронізація часу (NTP)…');
+    void link
+      .request('time.sync', {}, 35_000)
+      .then((res) => {
+        const r = this.runtime(id);
+        if (r.status) r.status = { ...r.status, agentTimeMs: res.agentTimeMs };
+        this.adminLog(id, res.ok ? 'info' : 'warn', `NTP: ${res.message}`);
+        this.pushRuntimes();
+      })
+      .catch((e) => this.adminLog(id, 'warn', `NTP: ${errMsg(e)}`));
   }
 
   private async afterHello(id: number, link: AgentLink): Promise<void> {
@@ -302,6 +335,17 @@ export class AgentHub extends EventEmitter<HubEvents> {
         const r = await link.request('session.clean', force ? { force: true } : {}, 120_000);
         this.adminLog(id, force ? 'warn' : 'info', `Очищено логіни${force ? ' (примусово, ПК був зайнятий)' : ''}: ${r.summary}`);
         return r.summary;
+      }
+      case 'sync-time': {
+        const link = this.onlineLink(id);
+        this.lastTimeSync.set(id, Date.now());
+        const res = await link.request('time.sync', {}, 35_000);
+        const rt = this.runtime(id);
+        if (rt.status) rt.status = { ...rt.status, agentTimeMs: res.agentTimeMs };
+        this.adminLog(id, res.ok ? 'info' : 'warn', `Синхронізація часу: ${res.message}`);
+        this.pushRuntimes();
+        if (!res.ok) throw new Error(res.message);
+        return res.message;
       }
     }
   }

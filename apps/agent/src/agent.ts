@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   AFTER_ACTION_TITLES,
+  DEFAULT_CLEAN_LAUNCHERS,
   DEFAULT_DETECTOR,
   DEFAULT_POST_SESSION_CLEAN,
   ERR_BUSY,
@@ -30,7 +31,10 @@ import { OccupancyDetector } from './occupancy/detector';
 import { PostSessionWatcher } from './occupancy/postSession';
 import { PresenceReporter, type PresenceMode } from './occupancy/presence';
 import { downloadVerified, installedServicePaths, launchUpdateHelper, updateHelperScript } from './update/selfUpdate';
+import { ensureDefenderExclusions } from './win/defender';
 import { DiskMonitor } from './win/disks';
+import { HealthMonitor } from './win/health';
+import { syncWindowsTime } from './win/time';
 import { AgentScheduler } from './scheduler';
 import { classifySteamLogin, ensureSteamcmd, GUARD_PROMPT_RE, runSteamcmd } from './steam/steamcmd';
 import type { AgentStore } from './store';
@@ -66,7 +70,11 @@ export function effectiveDetector(cfg: AgentConfigPayload | null): DetectorSetti
 export function effectivePostSession(cfg: AgentConfigPayload | null): PostSessionCleanSettings {
   const p = cfg?.postSessionClean;
   if (!p || typeof p !== 'object') return DEFAULT_POST_SESSION_CLEAN;
-  return { ...DEFAULT_POST_SESSION_CLEAN, ...p };
+  return {
+    ...DEFAULT_POST_SESSION_CLEAN,
+    ...p,
+    cleanLaunchers: { ...DEFAULT_CLEAN_LAUNCHERS, ...(p.cleanLaunchers ?? {}) },
+  };
 }
 
 /** Validates a config pushed by the admin app; returns an error text or null. */
@@ -84,7 +92,14 @@ export function validateConfigPayload(p: unknown): string | null {
     }
   }
   if (!m.update || !Array.isArray(m.update.appIds) || !m.update.appIds.every((x) => Number.isInteger(x) && x > 0)) return 'update.appIds';
+  if (m.update.ignoreAppIds !== undefined && (!Array.isArray(m.update.ignoreAppIds) || !m.update.ignoreAppIds.every((x) => Number.isInteger(x) && x > 0))) {
+    return 'update.ignoreAppIds';
+  }
   if (!m.workshop || !Array.isArray(m.workshop.appIds) || !m.workshop.appIds.every((x) => Number.isInteger(x) && x > 0)) return 'workshop.appIds';
+  if (m.extraUpdaters !== undefined) {
+    const eu = m.extraUpdaters;
+    if (!eu || typeof eu !== 'object' || !Array.isArray(eu.apps)) return 'extraUpdaters';
+  }
   if (!m.after || !['none', 'sleep', 'hibernate', 'shutdown'].includes(m.after.action)) return 'after.action';
   if (!c.schedule || typeof c.schedule.runTime !== 'string') return 'schedule';
   if (c.detector !== undefined) {
@@ -113,6 +128,7 @@ export class Agent extends EventEmitter {
   readonly postSession: PostSessionWatcher;
   private readonly presence: PresenceReporter;
   private readonly disks: DiskMonitor;
+  private readonly health: HealthMonitor;
   private quickCleanBusy = false;
   private quickCleanAt: string | null = null;
   private updating = false;
@@ -185,6 +201,7 @@ export class Agent extends EventEmitter {
       onTransition: (prev, next) => this.postSession.onTransition(prev, next),
     });
     this.disks = new DiskMonitor(d.sys, () => this.changed());
+    this.health = new HealthMonitor(d.sys, () => this.changed());
     d.log.on('line', (line) => this.emit('log', line));
   }
 
@@ -199,6 +216,8 @@ export class Agent extends EventEmitter {
 
   async init(): Promise<void> {
     const { sys, log, store } = this.d;
+    await sys.detectOemCodepage();
+    void ensureDefenderExclusions(sys, log, store, AGENT_VERSION);
     await applyPowerPolicy(sys, log);
     // A crash in the middle of an update could leave the junction behind.
     const steamcmdDir = store.state.config?.maintenance.steamcmdDir ?? 'C:\\steamcmd';
@@ -210,6 +229,7 @@ export class Agent extends EventEmitter {
     await this.presence.start();
     this.detector.start();
     this.disks.start();
+    this.health.start();
     this.scheduler.start();
   }
 
@@ -252,6 +272,8 @@ export class Agent extends EventEmitter {
       disks: this.disks.disks,
       quickCleanAt: this.quickCleanAt,
       lastQuickClean: this.d.store.state.lastQuickClean ?? null,
+      health: this.health.health,
+      agentTimeMs: Date.now(),
     };
   }
 
@@ -474,12 +496,19 @@ export class Agent extends EventEmitter {
     }
   }
 
+  async syncTime(): Promise<{ ok: boolean; agentTimeMs: number; message: string }> {
+    const res = await syncWindowsTime(this.d.sys, this.d.log);
+    this.changed();
+    return res;
+  }
+
   async shutdown(): Promise<void> {
     this.scheduler.stop();
     this.detector.stop();
     this.presence.stop();
     this.postSession.stop();
     this.disks.stop();
+    this.health.stop();
     if (this.runner.isRunning()) {
       this.runner.cancel();
       await this.runner.waitIdle(15_000);

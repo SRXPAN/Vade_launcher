@@ -1,11 +1,15 @@
-import { CircleStop, Ellipsis, LogOut, Moon, PackageOpen, Pencil, Play, Power, PowerOff, RotateCcw, ScrollText, Snowflake, TimerOff, User } from 'lucide-react';
+import { CircleStop, Clock, Ellipsis, LogOut, Moon, PackageOpen, Pencil, Play, Power, PowerOff, RotateCcw, ScrollText, Snowflake, TimerOff, User } from 'lucide-react';
 import { memo, type ReactNode } from 'react';
 import {
   AFTER_ACTION_TITLES,
+  clockDriftSec,
   compareVersions,
   deriveDisplayStatus,
   diskLevel,
+  evaluateHealth,
+  formatClockDrift,
   formatGb,
+  isClockDrifted,
   OCCUPANCY_TITLES,
   STEP_TITLES,
   type AlertSettings,
@@ -49,6 +53,11 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
   const subtitle = pc.name || rt?.info?.hostname || (rt?.lastSeen ? `був онлайн ${fmtAgo(rt.lastSeen)}` : 'агент ще не підключався');
   const version = rt?.info?.version;
   const outdated = !!version && !!latestAgentVersion && compareVersions(version, latestAgentVersion) < 0;
+  const health = online ? st?.health : null;
+  const hwIssues = health ? evaluateHealth(health, alerts, pc.zone) : [];
+  const drift = online ? clockDriftSec(st?.agentTimeMs) : null;
+  const drifted = online && isClockDrifted(st?.agentTimeMs);
+  const worstSsdWear = health?.ssd.reduce<number | null>((acc, d) => (d.wearPct != null && (acc == null || d.wearPct > acc) ? d.wearPct : acc), null) ?? null;
 
   return (
     <div className={`card ${selected ? 'selected' : ''}`} onClick={() => onToggle(pc.id)} onDoubleClick={() => onLogs(pc.id)}>
@@ -96,6 +105,28 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
           ))}
         </div>
       )}
+      {online && health && (
+        <div className="hw-chips">
+          <span className={`hw-chip ${hwIssues.find((i) => i.kind === 'ram')?.level ?? ''}`} title="Оперативна пам'ять">
+            {health.ramTotalGb} ГБ
+          </span>
+          {health.refreshRateHz != null && (
+            <span className={`hw-chip ${hwIssues.find((i) => i.kind === 'refreshRate')?.level ?? ''}`} title="Частота оновлення монітора">
+              {health.refreshRateHz} Гц
+            </span>
+          )}
+          {health.gpuTempC != null && (
+            <span className={`hw-chip ${hwIssues.find((i) => i.kind === 'gpuTemp')?.level ?? ''}`} title="Температура GPU">
+              GPU {health.gpuTempC}°C
+            </span>
+          )}
+          {worstSsdWear != null && (
+            <span className={`hw-chip ${hwIssues.find((i) => i.kind === 'ssdWear' || i.kind === 'ssdHealth')?.level ?? ''}`} title="Максимальний знос SSD">
+              SSD {worstSsdWear}%
+            </span>
+          )}
+        </div>
+      )}
       <div className="card-info">
         {job ? (
           <>
@@ -137,6 +168,11 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
             )}
             <div className="row dim">{runTime ? `Розклад: ${runTime}` : 'Не в нічному розкладі'}</div>
             {!online && wolRecent && <div className="row dim">WoL надіслано о {fmtTime(rt!.wolSentAt)}</div>}
+            {drifted && drift != null && (
+              <div className="row warn">
+                <Clock size={13} /> Збитий час ({formatClockDrift(drift)})
+              </div>
+            )}
             {(rt?.link === 'auth-failed' || rt?.link === 'incompatible') && rt.lastError && <div className="row err">{rt.lastError}</div>}
           </>
         )}
@@ -189,6 +225,7 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
                 <hr />
                 {item('cancel', 'Скасувати завдання', <CircleStop size={15} />)}
                 {item('cancel-power', 'Скасувати вимкнення', <TimerOff size={15} />)}
+                {item('sync-time', 'Синхронізувати час', <Clock size={15} />)}
                 <hr />
                 <button
                   disabled={!online}

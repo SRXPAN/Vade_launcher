@@ -45,6 +45,8 @@ const api: VadeApi = {
   onLogs: subscribe(IPC.logsAppend),
   onScanProgress: subscribe(IPC.scanProgress),
   onPcsChanged: subscribe(IPC.pcsChanged),
+  listHistory: () => ipcRenderer.invoke(IPC.historyList),
+  onHistoryChanged: subscribe(IPC.historyUpdate),
 };
 
 contextBridge.exposeInMainWorld('vade', api);

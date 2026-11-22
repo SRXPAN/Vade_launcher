@@ -1,4 +1,4 @@
-import { CircleCheck, CircleDashed, CircleStop, CircleX, Copy, LoaderCircle, Lock, Play, X } from 'lucide-react';
+import { Ban, CircleCheck, CircleDashed, CircleStop, CircleX, Copy, LoaderCircle, Lock, Play, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import {
   deriveDisplayStatus,
@@ -43,6 +43,7 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
   const [showSteam, setShowSteam] = useState(true);
   const [follow, setFollow] = useState(true);
   const [confirmSenet, setConfirmSenet] = useState(false);
+  const [ignoringApp, setIgnoringApp] = useState<number | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -90,6 +91,21 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
       toast('ok', `Збережено: процес SENET ${presence.foreground}${presence.foregroundTitle.trim() ? `, заголовок «${presence.foregroundTitle.trim()}»` : ''}`);
     } catch (e) {
       toast('error', errorText(e));
+    }
+  };
+
+  const addToIgnore = async (appId: number, name?: string) => {
+    if (settings.maintenance.update.ignoreAppIds.includes(appId)) return;
+    setIgnoringApp(appId);
+    try {
+      const next = structuredClone(settings);
+      next.maintenance.update.ignoreAppIds = [...next.maintenance.update.ignoreAppIds, appId];
+      onSettingsSaved(await api.saveSettings(next));
+      toast('ok', `AppID ${appId}${name ? ` (${name})` : ''} додано до списку ігнорування — налаштування надіслано агентам`);
+    } catch (e) {
+      toast('error', errorText(e));
+    } finally {
+      setIgnoringApp(null);
     }
   };
 
@@ -204,17 +220,37 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
                   </tr>
                 </thead>
                 <tbody>
-                  {shownJob.apps.map((a) => (
-                    <tr key={`${a.library}:${a.appId}`}>
-                      <td className="mono">{a.appId}</td>
-                      <td>{a.name ?? '—'}</td>
-                      <td className={APP_STATUS[a.status].cls} title={a.message}>
-                        {APP_STATUS[a.status].label}
-                        {a.message && a.status !== 'ok' && <div className="dim">{a.message}</div>}
-                      </td>
-                      <td className="dim mono">{a.library}</td>
-                    </tr>
-                  ))}
+                  {shownJob.apps.map((a) => {
+                    const canIgnore = a.status === 'error' || a.status === 'skipped_no_subscription';
+                    const alreadyIgnored = settings.maintenance.update.ignoreAppIds.includes(a.appId);
+                    return (
+                      <tr key={`${a.library}:${a.appId}`}>
+                        <td className="mono">{a.appId}</td>
+                        <td>{a.name ?? '—'}</td>
+                        <td className={APP_STATUS[a.status].cls} title={a.message}>
+                          <div className="app-status-row">
+                            <span>{APP_STATUS[a.status].label}</span>
+                            {canIgnore &&
+                              (alreadyIgnored ? (
+                                <span className="ignore-tag">в ігнорі</span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="ignore-btn"
+                                  disabled={ignoringApp === a.appId}
+                                  title={`Додати AppID ${a.appId} у список ігнорування`}
+                                  onClick={() => void addToIgnore(a.appId, a.name)}
+                                >
+                                  <Ban size={11} /> + в ігнор
+                                </button>
+                              ))}
+                          </div>
+                          {a.message && a.status !== 'ok' && <div className="dim">{a.message}</div>}
+                        </td>
+                        <td className="dim mono">{a.library}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}

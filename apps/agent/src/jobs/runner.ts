@@ -6,6 +6,7 @@ import {
   STEP_TITLES,
   type AgentConfigPayload,
   type AppResult,
+  type AppUpdateStatus,
   type JobMode,
   type JobState,
   type LogLevel,
@@ -14,7 +15,7 @@ import {
   type StepId,
 } from '@vade/protocol';
 import type { Logger } from '../logger';
-import { findLibraries, installedApps } from '../steam/libraries';
+import { findLibraries, installedApps, type InstalledApp } from '../steam/libraries';
 import {
   classifyApp,
   detectLoginError,
@@ -37,6 +38,7 @@ import {
   type StepCtx,
   type StepOutcome,
 } from './steps';
+import { runExtraUpdaters } from './extraUpdaters';
 
 const JOB_TIMEOUT_MS = 8 * 3600_000; // same limit as the old scheduled task
 const STEAMCMD_TIMEOUT_MS = 6 * 3600_000;
@@ -47,6 +49,14 @@ const MODE_TITLES: Record<JobMode, string> = {
   scheduled: 'нічне обслуговування за розкладом',
 };
 
+export interface SteamcmdOps {
+  ensureSteamcmd: typeof ensureSteamcmd;
+  runSteamcmd: typeof runSteamcmd;
+  freeLinkSlot: typeof freeLinkSlot;
+  createJunction: typeof createJunction;
+  removeLinkOnly: typeof removeLinkOnly;
+}
+
 export interface RunnerDeps {
   sys: Sys;
   log: Logger;
@@ -56,6 +66,34 @@ export interface RunnerDeps {
   finished(job: JobState): void;
   schedulePower(action: PowerAction, delaySec: number, reason: string): void;
   steamcmdBusy(): boolean;
+  /** Optional override for tests (defaults to real SteamCMD & NTFS junctions). */
+  steamcmdOps?: Partial<SteamcmdOps>;
+}
+
+/** Splits library games into those sent to SteamCMD and those skipped via ignoreAppIds (in auto mode). */
+export function partitionLibraryApps(
+  installed: InstalledApp[],
+  update: MaintenanceConfig['update'],
+): { toUpdate: InstalledApp[]; ignored: InstalledApp[] } {
+  if (update.mode === 'list') {
+    const wanted = new Set(update.appIds);
+    return { toUpdate: installed.filter((a) => wanted.has(a.appId)), ignored: [] };
+  }
+  const ignoreSet = new Set(update.ignoreAppIds ?? []);
+  const toUpdate: InstalledApp[] = [];
+  const ignored: InstalledApp[] = [];
+  for (const app of installed) {
+    if (ignoreSet.has(app.appId)) ignored.push(app);
+    else toUpdate.push(app);
+  }
+  return { toUpdate, ignored };
+}
+
+/** Whether a game's final status should increment job.errors and mark the job as failed. */
+export function isAppErrorStatus(status: AppUpdateStatus, treatNoSubscriptionAsError: boolean): boolean {
+  if (status === 'error' || status === 'login_error') return true;
+  if (status === 'skipped_no_subscription') return treatNoSubscriptionAsError;
+  return false;
 }
 
 export function planSteps(m: MaintenanceConfig, mode: JobMode): StepId[] {
@@ -66,6 +104,7 @@ export function planSteps(m: MaintenanceConfig, mode: JobMode): StepId[] {
   if (m.cleanUserdata) steps.push('userdata');
   if (m.workshop.enabled) steps.push('workshop');
   if (m.update.enabled) steps.push('update');
+  if (m.extraUpdaters?.enabled) steps.push('extraUpdaters');
   if (mode !== 'test' && m.after.action !== 'none') steps.push('after');
   return steps;
 }
@@ -164,6 +203,7 @@ export class JobRunner {
       await this.step(job, 'userdata', signal, steam(() => cleanUserdata(ctx)));
       await this.step(job, 'workshop', signal, steam(() => cleanWorkshop(ctx, libraries)));
       await this.step(job, 'update', signal, steam(() => this.updateGames(job, m, libraries, signal, L)));
+      await this.step(job, 'extraUpdaters', signal, () => runExtraUpdaters(ctx));
     } finally {
       awake.stop();
     }
@@ -215,7 +255,16 @@ export class JobRunner {
     if (!u.steamUser.trim()) return { status: 'error', note: 'не вказано логін Steam' };
     if (u.mode === 'list' && u.appIds.length === 0) return { status: 'skipped', note: 'список AppID порожній' };
 
-    const exe = await ensureSteamcmd(sys, m.steamcmdDir, signal, (msg) => L('info', `  ${msg}`));
+    const ops: SteamcmdOps = {
+      ensureSteamcmd,
+      runSteamcmd,
+      freeLinkSlot,
+      createJunction,
+      removeLinkOnly,
+      ...this.d.steamcmdOps,
+    };
+
+    const exe = await ops.ensureSteamcmd(sys, m.steamcmdDir, signal, (msg) => L('info', `  ${msg}`));
     if (!exe) {
       return sys.dryRun
         ? { status: 'skipped', note: 'dry-run: SteamCMD відсутній' }
@@ -226,15 +275,32 @@ export class JobRunner {
     const rawFile = path.join(this.d.dataDir, 'steamcmd-last.txt');
     await fsp.writeFile(rawFile, '').catch(() => undefined);
     const wanted = u.mode === 'list' ? new Set(u.appIds) : null;
+    const treatNoSubAsError = u.treatNoSubscriptionAsError === true;
     const found = new Set<number>();
     let errors = 0;
 
     for (const lib of libraries) {
       if (signal.aborted) break;
-      const apps = installedApps(lib).filter((a) => !wanted || wanted.has(a.appId));
-      if (apps.length === 0) continue;
+      const { toUpdate: apps, ignored } = partitionLibraryApps(installedApps(lib), u);
+      if (apps.length === 0 && ignored.length === 0) continue;
       apps.forEach((a) => found.add(a.appId));
       L('info', `  Бібліотека: ${lib}`);
+      if (ignored.length > 0) {
+        L('info', `  Пропущено (ігнор): ${ignored.map((a) => (a.name ? `${a.appId} (${a.name})` : a.appId)).join(', ')}`);
+        job.apps.push(
+          ...ignored.map<AppResult>((a) => ({
+            appId: a.appId,
+            name: a.name,
+            library: lib,
+            status: 'ignored',
+            message: 'у списку винятків',
+          })),
+        );
+      }
+      if (apps.length === 0) {
+        this.d.changed();
+        continue;
+      }
       L('info', `  Ігри: ${apps.map((a) => (a.name ? `${a.appId} (${a.name})` : a.appId)).join(', ')}`);
       const batch: AppResult[] = apps.map((a) => ({ appId: a.appId, name: a.name, library: lib, status: 'pending' }));
       job.apps.push(...batch);
@@ -246,14 +312,14 @@ export class JobRunner {
         continue;
       }
 
-      if (!(await freeLinkSlot(sys, slot))) {
+      if (!(await ops.freeLinkSlot(sys, slot))) {
         L('error', `  ПОМИЛКА: ${slot} зайнятий і не може бути звільнений`);
         batch.forEach((b) => Object.assign(b, { status: 'error', message: 'steamcmd\\steamapps зайнятий' }));
         errors += batch.length;
         continue;
       }
       try {
-        await createJunction(sys, slot, path.join(lib, 'steamapps'));
+        await ops.createJunction(sys, slot, path.join(lib, 'steamapps'));
       } catch (e) {
         L('error', `  ПОМИЛКА: не вдалося створити junction на ${lib}\\steamapps: ${errMsg(e)}`);
         batch.forEach((b) => Object.assign(b, { status: 'error', message: 'junction не створено' }));
@@ -266,7 +332,7 @@ export class JobRunner {
         const args = ['+@NoPromptForPassword', '1', '+login', u.steamUser];
         for (const b of batch) args.push('+app_update', String(b.appId), ...(u.validate ? ['validate'] : []));
         args.push('+quit');
-        const res = await runSteamcmd(exe, args, {
+        const res = await ops.runSteamcmd(exe, args, {
           signal,
           timeoutMs: STEAMCMD_TIMEOUT_MS,
           rawFile,
@@ -276,7 +342,7 @@ export class JobRunner {
         if (res.timedOut) L('error', '  SteamCMD перевищив ліміт часу і був зупинений');
       } finally {
         // Always remove the link; the game files stay where they are.
-        if (!(await removeLinkOnly(sys, slot))) L('error', `  УВАГА: не вдалося видалити тимчасовий junction ${slot}`);
+        if (!(await ops.removeLinkOnly(sys, slot))) L('error', `  УВАГА: не вдалося видалити тимчасовий junction ${slot}`);
       }
       job.progress = null;
 
@@ -295,10 +361,11 @@ export class JobRunner {
         }
         const label = b.name ? `${b.appId} ${b.name}` : String(b.appId);
         if (b.status === 'ok') L('info', `  ${label}: OK${b.message ? ` (${b.message})` : ''}`);
-        else if (b.status === 'skipped_no_subscription') L('warn', `  ${label}: Skipped - No subscription`);
-        else if (b.status === 'login_error') L('error', `  ${label}: LOGIN ERROR`);
+        else if (b.status === 'skipped_no_subscription') {
+          L(treatNoSubAsError ? 'error' : 'warn', `  ${label}: Skipped - No subscription${b.message ? ` (${b.message})` : ''}`);
+        } else if (b.status === 'login_error') L('error', `  ${label}: LOGIN ERROR`);
         else L('error', `  ${label}: ERROR — ${b.message ?? ''}`);
-        if (b.status === 'error' || b.status === 'login_error') errors++;
+        if (isAppErrorStatus(b.status, treatNoSubAsError)) errors++;
       }
       this.d.changed();
     }
@@ -306,7 +373,13 @@ export class JobRunner {
     if (wanted) for (const id of wanted) if (!found.has(id)) L('warn', `  ${id}: не встановлено на цьому ПК — пропущено`);
     if (job.apps.length === 0) return { note: 'немає ігор для оновлення' };
     const ok = job.apps.filter((a) => a.status === 'ok').length;
-    return { status: errors ? 'error' : 'ok', errors, note: `OK ${ok} з ${job.apps.length}${errors ? `, помилок ${errors}` : ''}` };
+    const ignoredCount = job.apps.filter((a) => a.status === 'ignored').length;
+    const noSubCount = job.apps.filter((a) => a.status === 'skipped_no_subscription').length;
+    const parts = [`OK ${ok} з ${job.apps.length}`];
+    if (ignoredCount) parts.push(`ігнор ${ignoredCount}`);
+    if (noSubCount) parts.push(`без ліцензії ${noSubCount}`);
+    if (errors) parts.push(`помилок ${errors}`);
+    return { status: errors ? 'error' : 'ok', errors, note: parts.join(', ') };
   }
 
   private onSteamLine(job: JobState, batch: AppResult[], line: string, L: (level: LogLevel, msg: string) => void): void {

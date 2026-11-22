@@ -1,10 +1,12 @@
-import { CalendarClock, Download, Eraser, Info, LogOut, Power, ShieldCheck, User } from 'lucide-react';
+import { CalendarClock, Download, Eraser, Info, LogOut, Plus, Power, ShieldCheck, Trash2, User } from 'lucide-react';
 import {
   AFTER_ACTION_TITLES,
   BROWSER_IDS,
   BROWSER_TITLES,
   formatHHMM,
   isPcScheduled,
+  LAUNCHER_IDS,
+  LAUNCHER_TITLES,
   orderQueue,
   pcRunMinute,
   resolveMaintenance,
@@ -74,6 +76,12 @@ export function ScheduleView({ settings, onSaved, pcs, setPcs }: Props) {
                 : `ПК №N стартує о «час старту + (N − 1) × крок». Головний ПК шле Wake-on-LAN за ${s.wolLeadMin} хв до старту, а агент сам запускає завдання у свій час — навіть якщо адмінка вимкнена (ПК прокидається таймером RTC).`}
             </div>
             <Option title="Розклад увімкнено" on={s.enabled} onChange={(v) => update((d) => void (d.schedule.enabled = v))} />
+            <Option
+              title="Автосинхронізація часу (NTP)"
+              desc="Якщо годинник ПК збився більш ніж на 2 хвилини, адмінка автоматично запускає w32tm /resync, щоб нічний розклад стартував вчасно."
+              on={s.autoSyncTime}
+              onChange={(v) => update((d) => void (d.schedule.autoSyncTime = v))}
+            />
             <div className="field" style={{ margin: '6px 0 10px' }}>
               <label>Режим (контроль навантаження на інтернет)</label>
               <Segmented<ScheduleMode>
@@ -364,6 +372,26 @@ export function ScheduleView({ settings, onSaved, pcs, setPcs }: Props) {
                 ))}
               </div>
             </Option>
+            <div className="opt">
+              <div className="opt-text">
+                <div className="opt-title">Лаунчери і месенджери (токени входу)</div>
+                <div className="opt-desc">Видаляє лише збережені сесії, токени та веб-кеш авторизації — встановлені ігри не чіпаються.</div>
+                <div className="opt-extra">
+                  <div className="radio-row">
+                    {LAUNCHER_IDS.map((id) => (
+                      <label key={id}>
+                        <input
+                          type="checkbox"
+                          checked={ps.cleanLaunchers[id]}
+                          onChange={(e) => update((d) => void (d.postSessionClean.cleanLaunchers[id] = e.target.checked))}
+                        />{' '}
+                        {LAUNCHER_TITLES[id]}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
             <div className="field" style={{ marginTop: 6 }}>
               <label>Закривати програми (по одній у рядку)</label>
               <NameListInput value={ps.closeApps} onChange={(v) => update((d) => void (d.postSessionClean.closeApps = v))} rows={4} />
@@ -402,6 +430,26 @@ export function ScheduleView({ settings, onSaved, pcs, setPcs }: Props) {
                 </label>
               </div>
               {m.update.mode === 'list' && <AppIdsInput value={m.update.appIds} onChange={(ids) => update((d) => void (d.maintenance.update.appIds = ids))} />}
+              <div className="field">
+                <label>Ігнорувати AppID (чужі ігри)</label>
+                <AppIdsInput
+                  value={m.update.ignoreAppIds}
+                  onChange={(ids) => update((d) => void (d.maintenance.update.ignoreAppIds = ids))}
+                  placeholder="1422450"
+                />
+                <span className="hint">У режимі auto ці ігри пропускаються і не викликають помилок оновлення.</span>
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Switch
+                  on={m.update.treatNoSubscriptionAsError}
+                  onChange={(v) => update((d) => void (d.maintenance.update.treatNoSubscriptionAsError = v))}
+                  label="Вважати відсутність ліцензії (No subscription) помилкою"
+                />
+                <span>
+                  Вважати відсутність ліцензії (No subscription) помилкою{' '}
+                  <span className="dim">— вимкнено: чужі ігри не переводять ПК у статус Error</span>
+                </span>
+              </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Switch on={m.update.validate} onChange={(v) => update((d) => void (d.maintenance.update.validate = v))} label="Validate" />
                 <span>
@@ -414,6 +462,113 @@ export function ScheduleView({ settings, onSaved, pcs, setPcs }: Props) {
                   Пароль не зберігається. На кожному ПК один раз виконайте «Вхід SteamCMD» (вкладка «Комп'ютери»), далі SteamCMD використовує
                   кешований вхід, у т.ч. після Steam Guard.
                 </span>
+              </div>
+            </Option>
+          </section>
+
+          <section className="section">
+            <h2>
+              <Download size={17} /> Оновлення лаунчерів (поза Steam)
+            </h2>
+            <Option
+              title="Оновлювати Riot / Epic / FACEIT AC після SteamCMD"
+              desc="По черзі запускає клієнти, чекає мінімальний час, стежить за мережевою активністю і закриває процес після 60 с простою."
+              on={m.extraUpdaters.enabled}
+              onChange={(v) => update((d) => void (d.maintenance.extraUpdaters.enabled = v))}
+            >
+              <div className="inline-fields">
+                <div className="field">
+                  <label>Мін. очікування, хв</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={m.extraUpdaters.minWaitMin}
+                    onChange={(e) => update((d) => void (d.maintenance.extraUpdaters.minWaitMin = Number(e.target.value)))}
+                  />
+                </div>
+                <div className="field">
+                  <label>Макс. ліміт, хв</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={1}
+                    max={180}
+                    value={m.extraUpdaters.maxWaitMin}
+                    onChange={(e) => update((d) => void (d.maintenance.extraUpdaters.maxWaitMin = Number(e.target.value)))}
+                  />
+                </div>
+                <div className="field">
+                  <label>Поріг простою, КБ/с</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={10}
+                    max={100000}
+                    value={m.extraUpdaters.idleKbps}
+                    onChange={(e) => update((d) => void (d.maintenance.extraUpdaters.idleKbps = Number(e.target.value)))}
+                  />
+                </div>
+              </div>
+              <div className="extra-apps">
+                {m.extraUpdaters.apps.map((app, idx) => (
+                  <div key={app.id || idx} className="extra-app-row">
+                    <div className="extra-app-top">
+                      <Switch
+                        on={app.enabled}
+                        onChange={(v) => update((d) => void (d.maintenance.extraUpdaters.apps[idx].enabled = v))}
+                        label={app.name}
+                      />
+                      <input
+                        className="input"
+                        style={{ flex: 1 }}
+                        value={app.name}
+                        placeholder="Назва клієнта"
+                        onChange={(e) => update((d) => void (d.maintenance.extraUpdaters.apps[idx].name = e.target.value))}
+                      />
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        title="Видалити"
+                        onClick={() => update((d) => void d.maintenance.extraUpdaters.apps.splice(idx, 1))}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    <div className="extra-app-paths">
+                      <input
+                        className="input mono"
+                        value={app.exePath}
+                        placeholder="C:\Program Files\..."
+                        onChange={(e) => update((d) => void (d.maintenance.extraUpdaters.apps[idx].exePath = e.target.value))}
+                      />
+                      <input
+                        className="input mono"
+                        value={app.args ?? ''}
+                        placeholder="Аргументи (необов'язково)"
+                        onChange={(e) => update((d) => void (d.maintenance.extraUpdaters.apps[idx].args = e.target.value))}
+                      />
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn small"
+                  onClick={() =>
+                    update((d) =>
+                      void d.maintenance.extraUpdaters.apps.push({
+                        id: `app-${Date.now()}`,
+                        name: 'Новий клієнт',
+                        exePath: 'C:\\Program Files\\',
+                        args: '',
+                        enabled: true,
+                      }),
+                    )
+                  }
+                >
+                  <Plus size={14} /> Додати клієнт
+                </button>
               </div>
             </Option>
           </section>

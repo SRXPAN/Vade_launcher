@@ -2,6 +2,7 @@
 import {
   BrushCleaning,
   CircleStop,
+  Clock,
   KeyRound,
   Link2,
   ListChecks,
@@ -22,10 +23,14 @@ import {
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import {
+  clockDriftSec,
   compareVersions,
   deriveDisplayStatus,
   diskLevel,
+  evaluateHealth,
+  formatClockDrift,
   formatGb,
+  isClockDrifted,
   STEP_TITLES,
   type AppSettings,
   type PcRecord,
@@ -111,6 +116,11 @@ export function PcTooltip({ id, pc, rt, tone, settings, runState, latestAgentVer
   const last = st?.lastJob ?? rt?.status?.lastJob ?? null;
   const slot = scheduleLabel(settings, pc);
   const wolRecent = !online && rt?.wolSentAt && Date.now() - new Date(rt.wolSentAt).getTime() < 5 * 60_000;
+  const health = st?.health;
+  const hwIssues = health ? evaluateHealth(health, settings.alerts, pc.zone) : [];
+  const drift = online ? clockDriftSec(st?.agentTimeMs) : null;
+  const drifted = online && isClockDrifted(st?.agentTimeMs);
+  const worstSsdWear = health?.ssd.reduce<number | null>((acc, d) => (d.wearPct != null && (acc == null || d.wearPct > acc) ? d.wearPct : acc), null) ?? null;
 
   return (
     <>
@@ -148,6 +158,25 @@ export function PcTooltip({ id, pc, rt, tone, settings, runState, latestAgentVer
           ))}
         </div>
       )}
+      {health && (
+        <div className="mt-row mt-hw">
+          <span className={hwIssues.some((i) => i.kind === 'ram') ? 'mt-err' : undefined}>RAM {health.ramTotalGb} ГБ</span>
+          {health.refreshRateHz != null && (
+            <span className={hwIssues.some((i) => i.kind === 'refreshRate') ? 'mt-warn' : undefined}>· {health.refreshRateHz} Гц</span>
+          )}
+          {health.gpuTempC != null && (
+            <span className={hwIssues.some((i) => i.kind === 'gpuTemp') ? 'mt-warn' : undefined}>· GPU {health.gpuTempC}°C</span>
+          )}
+          {worstSsdWear != null && (
+            <span className={hwIssues.some((i) => i.kind === 'ssdWear' || i.kind === 'ssdHealth') ? 'mt-warn' : undefined}>· SSD знос {worstSsdWear}%</span>
+          )}
+        </div>
+      )}
+      {hwIssues.map((issue, idx) => (
+        <div key={idx} className={`mt-row ${issue.level === 'crit' ? 'mt-err' : 'mt-warn'}`}>
+          ⚠ {issue.message}
+        </div>
+      ))}
       {job ? (
         <div className="mt-row" style={{ color: TONE_COLOR.work }}>
           {running ? STEP_TITLES[running.id] : 'Обслуговування'}
@@ -168,6 +197,7 @@ export function PcTooltip({ id, pc, rt, tone, settings, runState, latestAgentVer
       </div>
       {st?.pendingPower && <div className="mt-row mt-warn">Дія живлення о {fmtTime(st.pendingPower.at)}</div>}
       {st?.quickCleanAt && <div className="mt-row mt-warn">Очищення логінів о {fmtTime(st.quickCleanAt)}</div>}
+      {drifted && drift != null && <div className="mt-row mt-warn">Збитий час ({formatClockDrift(drift)})</div>}
       {runState && <div className="mt-row" style={{ color: 'var(--accent)' }}>{runState}</div>}
       {wolRecent && <div className="mt-row dim">WoL надіслано о {fmtTime(rt!.wolSentAt)}</div>}
       {(rt?.link === 'auth-failed' || rt?.link === 'incompatible') && rt.lastError && <div className="mt-row mt-err">{rt.lastError}</div>}
@@ -249,6 +279,7 @@ export function PcMenu(p: MenuProps) {
       </div>
       <hr />
       {item('Вхід SteamCMD', <KeyRound size={15} />, run(() => p.onSteam([pc.id])), { disabled: !online, title: offlineHint })}
+      {item('Синхронізувати час', <Clock size={15} />, act('sync-time'), { disabled: !online, title: offlineHint })}
       {busy && item('Скасувати завдання', <CircleStop size={15} />, act('cancel'))}
       {st?.pendingPower && item('Скасувати вимкнення', <TimerOff size={15} />, act('cancel-power'))}
       {online && p.outdated && item('Оновити агент…', <PackageOpen size={15} />, run(() => p.onUpdateAgent([pc.id])))}

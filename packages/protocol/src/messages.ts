@@ -11,6 +11,7 @@
  *   agent -> admin  { t:'res', id, ok, result | error }
  *   agent -> admin  { t:'evt', ev, data }
  */
+import { normalizeMac } from './validate';
 import type {
   AgentConfigPayload,
   AgentInfo,
@@ -20,6 +21,36 @@ import type {
   PendingPower,
   PowerAction,
 } from './types';
+
+/** Lightweight UDP broadcast sent by each agent (no secrets or keys) so the admin app can track DHCP IP changes by MAC. */
+export interface DiscoveryBeacon {
+  t: 'vade.beacon';
+  v: 1;
+  port: number;
+  hostname: string;
+  macs: string[];
+}
+
+export function parseDiscoveryBeacon(raw: string | Buffer): DiscoveryBeacon | null {
+  try {
+    const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+    const obj = JSON.parse(text) as Partial<DiscoveryBeacon>;
+    if (!obj || typeof obj !== 'object' || obj.t !== 'vade.beacon' || obj.v !== 1) return null;
+    if (typeof obj.port !== 'number' || !Number.isInteger(obj.port) || obj.port < 1 || obj.port > 65535) return null;
+    const hostname = typeof obj.hostname === 'string' ? obj.hostname.trim().slice(0, 120) : '';
+    if (!Array.isArray(obj.macs)) return null;
+    const macs: string[] = [];
+    for (const m of obj.macs) {
+      if (typeof m !== 'string') continue;
+      const norm = normalizeMac(m);
+      if (norm && norm !== '00:00:00:00:00:00' && !macs.includes(norm)) macs.push(norm);
+    }
+    if (macs.length === 0) return null;
+    return { t: 'vade.beacon', v: 1, port: obj.port, hostname, macs };
+  } catch {
+    return null;
+  }
+}
 
 export interface SealedSecret {
   iv: string;
@@ -72,6 +103,8 @@ export interface Commands {
    * (rollback if the new version does not start). The connection drops while the service restarts.
    */
   'agent.selfUpdate': { args: { url: string; sha256: string; version: string }; result: { message: string } };
+  /** Start w32time if stopped and run `w32tm /resync /force`. */
+  'time.sync': { args: Record<string, never>; result: { ok: boolean; agentTimeMs: number; message: string } };
 }
 
 export type CommandName = keyof Commands;

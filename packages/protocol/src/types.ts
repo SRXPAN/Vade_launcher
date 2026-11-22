@@ -6,6 +6,7 @@
 
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_AGENT_PORT = 7420;
+export const DEFAULT_DISCOVERY_PORT = 7422;
 
 /* ------------------------------------------------------------------ */
 /* Admin-side configuration                                            */
@@ -20,6 +21,22 @@ export type PowerAction = 'sleep' | 'hibernate' | 'shutdown' | 'restart';
 export type UpdateMode = 'auto' | 'list';
 /** Which Workshop content is removed: all games, or only listed AppIDs. */
 export type WorkshopMode = 'all' | 'list';
+
+export interface ExtraUpdaterApp {
+  id: string;
+  name: string;
+  exePath: string;
+  args?: string;
+  enabled: boolean;
+}
+
+export interface ExtraUpdatersConfig {
+  enabled: boolean;
+  apps: ExtraUpdaterApp[];
+  minWaitMin: number;
+  maxWaitMin: number;
+  idleKbps: number;
+}
 
 export interface MaintenanceConfig {
   /** Night (scheduled) maintenance is not started while a player is on the PC */
@@ -43,8 +60,13 @@ export interface MaintenanceConfig {
     steamUser: string;
     mode: UpdateMode;
     appIds: number[];
+    /** AppIDs skipped in 'auto' mode (e.g. player-installed games not owned by the club account) */
+    ignoreAppIds: number[];
+    /** When false (default), 'No subscription' / missing-license does not mark the job/PC as Error */
+    treatNoSubscriptionAsError: boolean;
     validate: boolean;
   };
+  extraUpdaters: ExtraUpdatersConfig;
   after: {
     action: AfterAction;
     /** 30..60 seconds between the end of the work and the power action. */
@@ -73,6 +95,8 @@ export interface ScheduleSettings {
   maxConcurrentUpdates: number;
   /** queue mode: zones first in this order, e.g. ["Stream", "Regular"]; the rest by PC number */
   zoneOrder: string[];
+  /** Automatically resync Windows time (NTP) when drift exceeds 120 seconds */
+  autoSyncTime: boolean;
 }
 
 export interface NetworkSettings {
@@ -82,6 +106,10 @@ export interface NetworkSettings {
   broadcast: string;
   agentPort: number;
   wolPort: number;
+  /** Auto-update PC IP by MAC when an agent broadcasts a UDP discovery beacon */
+  discoveryEnabled: boolean;
+  /** UDP port for discovery beacons (default 7422) */
+  discoveryPort: number;
 }
 
 export interface SecuritySettings {
@@ -134,6 +162,8 @@ export interface PresenceInfo {
 /* ------------------------------------------------------------------ */
 
 export type BrowserId = 'chrome' | 'edge' | 'opera' | 'firefox';
+export type LauncherId = 'riot' | 'epic' | 'battlenet' | 'ea' | 'discord' | 'telegram';
+export type CleanLaunchersSettings = Record<LauncherId, boolean>;
 
 export interface PostSessionCleanSettings {
   enabled: boolean;
@@ -146,6 +176,8 @@ export interface PostSessionCleanSettings {
   /** Cookies, saved logins, sessions and site storage of the browsers below (bookmarks stay) */
   cleanBrowsers: boolean;
   browsers: BrowserId[];
+  /** Remove saved account tokens / web caches of launchers & messengers */
+  cleanLaunchers: CleanLaunchersSettings;
 }
 
 export interface QuickCleanInfo {
@@ -156,7 +188,7 @@ export interface QuickCleanInfo {
 }
 
 /* ------------------------------------------------------------------ */
-/* Disks                                                               */
+/* Disks & Hardware Health                                             */
 /* ------------------------------------------------------------------ */
 
 export interface DiskInfo {
@@ -166,11 +198,43 @@ export interface DiskInfo {
   totalBytes: number;
 }
 
+export interface SsdHealth {
+  model: string;
+  healthStatus: string;
+  wearPct: number | null;
+  tempC: number | null;
+}
+
+export interface HardwareHealth {
+  ramTotalGb: number;
+  refreshRateHz: number | null;
+  ssd: SsdHealth[];
+  gpuTempC: number | null;
+  cpuTempC: number | null;
+}
+
+export interface HealthThresholds {
+  /** Minimum expected RAM in GB (0 = disabled) */
+  minRamGb: number;
+  /** Minimum expected primary monitor refresh rate in Hz (0 = disabled) */
+  minRefreshRateHz: number;
+  /** GPU temperature warning threshold in °C (0 = disabled) */
+  maxGpuTempC: number;
+  /** SSD wear percentage warning threshold 0..100 (0 = disabled) */
+  maxSsdWearPct: number;
+}
+
 export interface AlertSettings {
   /** Less free space than this = yellow */
   diskWarnGb: number;
   /** Less free space than this = red */
   diskCritGb: number;
+  minRamGb: number;
+  minRefreshRateHz: number;
+  maxGpuTempC: number;
+  maxSsdWearPct: number;
+  /** Optional per-zone overrides (e.g. "Stream", "VIP") */
+  zoneThresholds?: Record<string, Partial<HealthThresholds>>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,6 +273,8 @@ export interface UiSettings {
   closeToTray: boolean;
   /** Colour theme for the entire admin app (including the club map) */
   theme: ThemeMode;
+  /** Number of days to retain job history records in history.json (default 14) */
+  historyRetentionDays: number;
 }
 
 export interface AppSettings {
@@ -282,6 +348,7 @@ export type StepId =
   | 'userdata'
   | 'workshop'
   | 'update'
+  | 'extraUpdaters'
   | 'after';
 
 export type StepStatus = 'pending' | 'running' | 'ok' | 'skipped' | 'error';
@@ -296,6 +363,7 @@ export type AppUpdateStatus =
   | 'pending'
   | 'updating'
   | 'ok'
+  | 'ignored'
   | 'skipped_no_subscription'
   | 'error'
   | 'login_error';
@@ -332,6 +400,26 @@ export interface JobState {
   result?: JobResult;
 }
 
+export interface JobHistoryAppError {
+  appId: number;
+  name?: string;
+  status: AppUpdateStatus;
+  message?: string;
+}
+
+export interface JobHistoryEntry {
+  id: string;
+  pcId: number;
+  startedAt: string;
+  finishedAt: string;
+  durationSec: number;
+  mode: JobMode;
+  result: JobResult;
+  updatedApps: number;
+  errorApps: JobHistoryAppError[];
+  errors: number;
+}
+
 /* ------------------------------------------------------------------ */
 /* Agent status                                                        */
 /* ------------------------------------------------------------------ */
@@ -364,6 +452,10 @@ export interface AgentStatus {
   /** Automatic post-session clean is armed and fires at this time */
   quickCleanAt?: string | null;
   lastQuickClean?: QuickCleanInfo | null;
+  /** Hardware & peripheral health metrics (RAM, monitor Hz, GPU temp, SSD SMART) */
+  health?: HardwareHealth | null;
+  /** Agent's local Date.now() epoch ms when this status was built (for NTP drift detection) */
+  agentTimeMs?: number;
 }
 
 export interface AgentNic {

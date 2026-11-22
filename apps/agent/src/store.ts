@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_AGENT_PORT, type AgentConfigPayload, type JobState, type QuickCleanInfo } from '@vade/protocol';
+import { DEFAULT_AGENT_PORT, DEFAULT_DISCOVERY_PORT, type AgentConfigPayload, type JobState, type QuickCleanInfo } from '@vade/protocol';
 import { parseJsonFile } from './util';
 
 /** agent.json — written by the installer, read-only for the agent. */
@@ -10,6 +10,8 @@ export interface AgentFileConfig {
   bind: string;
   /** If not empty, only these admin IPs may connect (127.0.0.1 is always allowed). */
   allowFrom: string[];
+  /** UDP port for LAN discovery beacons (default 7422) */
+  discoveryPort: number;
 }
 
 /** state.json — owned by the agent. */
@@ -19,6 +21,8 @@ export interface AgentPersistedState {
   lastScheduledKey: string | null;
   lastJob: JobState | null;
   lastQuickClean?: QuickCleanInfo | null;
+  /** Last agent version that registered Windows Defender folder exclusions */
+  defenderExcludedVersion?: string | null;
 }
 
 export class AgentStore {
@@ -50,6 +54,7 @@ export class AgentStore {
       port: Number.isInteger(raw.port) && raw.port! > 0 ? raw.port! : DEFAULT_AGENT_PORT,
       bind: typeof raw.bind === 'string' && raw.bind ? raw.bind : '0.0.0.0',
       allowFrom: Array.isArray(raw.allowFrom) ? raw.allowFrom.filter((x): x is string => typeof x === 'string' && !!x) : [],
+      discoveryPort: Number.isInteger(raw.discoveryPort) && raw.discoveryPort! > 0 ? raw.discoveryPort! : DEFAULT_DISCOVERY_PORT,
     };
   }
 

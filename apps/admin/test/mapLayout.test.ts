@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SEED_PCS, type PcRuntime } from '@vade/protocol';
+import { parseDiscoveryBeacon, SEED_PCS, type PcRecord, type PcRuntime } from '@vade/protocol';
+import { handleBeaconPacket, matchBeaconToPc } from '../src/main/discovery';
 import { AdminStore } from '../src/main/store';
 import { defaultMapLayout, LANDMARK_KINDS, minGridSize, sanitizeMapLayout, type MapLayout } from '../src/shared/mapLayout';
 import {
@@ -383,6 +384,61 @@ describe('AdminStore theme setting', () => {
 
     const bad = { ...store.settings, ui: { ...store.settings.ui, theme: 'neon' as never } };
     expect(store.saveSettings(bad).ui.theme).toBe('system');
+  });
+
+  it('matches UDP discovery beacons by MAC, updates PC IP in pcs.json, logs and reconnects', () => {
+    const dir = tmp();
+    const store = new AdminStore(dir);
+    // PC #1 in SEED_PCS has mac 30:56:0f:3e:93:88 and ip 10.70.4.112
+    const rawPacket = JSON.stringify({
+      t: 'vade.beacon',
+      v: 1,
+      port: 7420,
+      hostname: 'CLUB-PC-01',
+      macs: ['30-56-0F-3E-93-88'],
+    });
+    const parsed = parseDiscoveryBeacon(rawPacket);
+    expect(parsed).toEqual({
+      t: 'vade.beacon',
+      v: 1,
+      port: 7420,
+      hostname: 'CLUB-PC-01',
+      macs: ['30:56:0f:3e:93:88'],
+    });
+
+    // Same IP -> no change needed
+    expect(matchBeaconToPc(store.pcs, parsed!, '10.70.4.112')).toBeNull();
+    // IP already used by PC #2 (10.70.4.115) -> conflict, do not overwrite
+    expect(matchBeaconToPc(store.pcs, parsed!, '10.70.4.115')).toBeNull();
+
+    // New DHCP IP 10.70.4.205 -> updates pcs.json, logs, emits pcsChanged, and syncs AgentHub
+    const logs: Array<{ id: number; level: string; msg: string }> = [];
+    let synced = 0;
+    let emittedPcs: PcRecord[] | null = null;
+    const fakeHub = {
+      adminLog: (id: number, level: string, msg: string) => logs.push({ id, level, msg }),
+      sync: () => {
+        synced++;
+      },
+      emit: ((ev: string, pcs: PcRecord[]) => {
+        if (ev === 'pcsChanged') emittedPcs = pcs;
+        return true;
+      }) as never,
+    };
+
+    const match = handleBeaconPacket(rawPacket, '10.70.4.205', store, fakeHub);
+    expect(match).toMatchObject({ oldIp: '10.70.4.112', newIp: '10.70.4.205', mac: '30:56:0f:3e:93:88' });
+    expect(store.pcs.find((p) => p.id === 1)?.ip).toBe('10.70.4.205');
+    expect(new AdminStore(dir).pcs.find((p) => p.id === 1)?.ip).toBe('10.70.4.205');
+    expect(logs).toEqual([
+      {
+        id: 1,
+        level: 'info',
+        msg: 'Виявлено зміну IP по MAC: 10.70.4.112 → 10.70.4.205',
+      },
+    ]);
+    expect(synced).toBe(1);
+    expect(emittedPcs).not.toBeNull();
   });
 });
 

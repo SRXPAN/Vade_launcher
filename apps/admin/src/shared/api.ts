@@ -1,5 +1,5 @@
 /** Contract between the renderer (window.vade) and the Electron main process. */
-import type { AppSettings, JobMode, LogLine, PcRecord, PcRuntime, SteamLoginResult } from '@vade/protocol';
+import type { AppSettings, JobHistoryEntry, JobMode, LogLine, PcRecord, PcRuntime, SteamLoginResult } from '@vade/protocol';
 import type { MapLayout } from './mapLayout';
 
 export type PcAction =
@@ -12,7 +12,8 @@ export type PcAction =
   | 'shutdown'
   | 'restart'
   | 'cancel-power'
-  | 'clean-logins';
+  | 'clean-logins'
+  | 'sync-time';
 
 export interface ActionResult {
   pcId: number;
@@ -204,6 +205,8 @@ export interface VadeApi {
   onLogs(cb: (batches: LogBatch[]) => void): () => void;
   onScanProgress(cb: (p: ScanProgress) => void): () => void;
   onPcsChanged(cb: (pcs: PcRecord[]) => void): () => void;
+  listHistory(): Promise<JobHistoryEntry[]>;
+  onHistoryChanged(cb: (entries: JobHistoryEntry[]) => void): () => void;
 }
 
 export const IPC = {
@@ -243,4 +246,6 @@ export const IPC = {
   logsAppend: 'logs:append',
   scanProgress: 'scan:progress',
   pcsChanged: 'pcs:changed',
+  historyList: 'history:list',
+  historyUpdate: 'history:update',
 } as const;

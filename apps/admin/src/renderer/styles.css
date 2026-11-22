@@ -1046,6 +1046,43 @@ table.apps td {
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
+.app-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ignore-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-2);
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ignore-btn:hover:not(:disabled) {
+  background: var(--panel-3);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.ignore-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ignore-tag {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--panel-3);
+  color: var(--text-3);
+  font-weight: 600;
+}
 .log-tools {
   display: flex;
   align-items: center;
@@ -2105,4 +2142,98 @@ table.scan td {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+
+/* ---------- Hardware health chips, Extra Updaters & History ---------- */
+.hw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.hw-chip {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.hw-chip.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 700;
+}
+.hw-chip.crit {
+  background: var(--err-soft);
+  color: var(--err);
+  font-weight: 700;
+}
+.mt-hw {
+  font-size: 12px;
+  gap: 4px;
+}
+.extra-apps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.extra-app-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.extra-app-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.extra-app-paths {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 6px;
+}
+@media (max-width: 900px) {
+  .extra-app-paths {
+    grid-template-columns: 1fr;
+  }
+}
+.problem-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.problem-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--err) 35%, var(--border));
+  background: var(--err-soft);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s, transform 0.12s;
+}
+.problem-card:hover {
+  border-color: var(--err);
+  transform: translateY(-1px);
+}
+.problem-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.problem-apps {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

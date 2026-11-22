@@ -1,16 +1,17 @@
-import { CalendarClock, Globe, HardDrive, Monitor, Moon, Settings, Sun, User } from 'lucide-react';
+import { CalendarClock, Globe, HardDrive, History, Monitor, Moon, Settings, Sun, User } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { deriveDisplayStatus, worstDiskLevel, type AppSettings, type PcRecord, type PcRuntime, type ThemeMode } from '@vade/protocol';
 import type { AppInfo } from '../shared/api';
 import { api } from './api';
 import { occupancyOf, STATUS_LABEL, STATUS_ORDER } from './format';
+import { HistoryView } from './HistoryView';
 import { PcsView } from './PcsView';
 import { ScheduleView } from './ScheduleView';
 import { SettingsView } from './SettingsView';
 import { SiteView } from './SiteView';
 import { ToastProvider, useNow } from './ui';
 
-type Tab = 'pcs' | 'schedule' | 'site' | 'settings';
+type Tab = 'pcs' | 'schedule' | 'history' | 'site' | 'settings';
 
 function useSystemDark(): boolean {
   const [dark, setDark] = useState(() => (typeof window !== 'undefined' ? window.matchMedia('(prefers-color-scheme: dark)').matches : true));
@@ -98,6 +99,9 @@ export function App() {
             <button className={`tab ${tab === 'schedule' ? 'active' : ''}`} onClick={() => setTab('schedule')}>
               <CalendarClock size={16} /> Розклад і завдання
             </button>
+            <button className={`tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+              <History size={16} /> Історія
+            </button>
             <button className={`tab ${tab === 'site' ? 'active' : ''}`} onClick={() => setTab('site')}>
               <Globe size={16} /> Інтеграція з сайтом
             </button>
@@ -138,6 +142,7 @@ export function App() {
         <main className="content">
           {tab === 'pcs' && <PcsView pcs={pcs} setPcs={setPcs} runtimes={runtimes} settings={settings} onSettingsSaved={setSettings} />}
           {tab === 'schedule' && <ScheduleView settings={settings} onSaved={setSettings} pcs={pcs} setPcs={setPcs} />}
+          {tab === 'history' && <HistoryView pcs={pcs} />}
           {tab === 'site' && <SiteView settings={settings} onSaved={setSettings} pcs={pcs} runtimes={runtimes} />}
           {tab === 'settings' && <SettingsView settings={settings} onSaved={setSettings} info={info} />}
         </main>

@@ -58,18 +58,25 @@ export interface AppLineResult {
   message?: string;
 }
 
+const NO_SUBSCRIPTION_RE =
+  /no subscription|no license|invalid platform|missing configuration|access denied|subscription required|not owned|region locked/i;
+
+function noSubscriptionResult(appId: number, reason: string): AppLineResult {
+  const clean = reason.trim();
+  const message = /^no subscription$/i.test(clean) ? 'клубний акаунт не має цієї гри' : `немає доступу (${clean})`;
+  return { appId, status: 'skipped_no_subscription', message };
+}
+
 export function parseAppResultLine(line: string): AppLineResult | null {
   let m = /Success! App '(\d+)' (fully installed|already up to date)/i.exec(line);
   if (m) return { appId: Number(m[1]), status: 'ok', message: /already/i.test(m[2]) ? 'вже актуальна' : 'оновлено' };
   m = /Failed to install app '(\d+)' \(([^)]*)\)/i.exec(line);
   if (m) {
-    if (/no subscription/i.test(m[2])) {
-      return { appId: Number(m[1]), status: 'skipped_no_subscription', message: 'клубний акаунт не має цієї гри' };
-    }
+    if (NO_SUBSCRIPTION_RE.test(m[2])) return noSubscriptionResult(Number(m[1]), m[2]);
     return { appId: Number(m[1]), status: 'error', message: m[2] };
   }
-  m = /'(\d+)' \(No subscription\)/i.exec(line);
-  if (m) return { appId: Number(m[1]), status: 'skipped_no_subscription', message: 'клубний акаунт не має цієї гри' };
+  m = /'(\d+)' \(([^)]*)\)/i.exec(line);
+  if (m && NO_SUBSCRIPTION_RE.test(m[2])) return noSubscriptionResult(Number(m[1]), m[2]);
   return null;
 }
 

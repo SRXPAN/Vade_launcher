@@ -105,7 +105,7 @@ import {
 } from './mapEdit';
 import { CELL, LabelGlyph, LandmarkGlyph, PcGlyph, ZoneBoxGlyph } from './MapGlyphs';
 import { EditContextMenu, Floating, PcMenu, PcTooltip, type Anchor } from './MapPopups';
-import { diskAlert, jobProgress, LEGEND, mapTone, TONE_COLOR } from './mapStatus';
+import { jobProgress, LEGEND, mapTone, pcAlertLevel, TONE_COLOR } from './mapStatus';
 
 export type SelectMode = 'toggle' | 'add' | 'replace';
 
@@ -1076,7 +1076,7 @@ export function ClubMap(props: Props) {
     const rt = runtimes[id];
     return {
       tone: mapTone(rt, !!pc),
-      disk: pc ? diskAlert(rt, settings.alerts) : ('ok' as const),
+      disk: pc ? pcAlertLevel(rt, settings.alerts, pc.zone) : ('ok' as const),
       progress: pc ? jobProgress(rt) : null,
     };
   };
@@ -1501,7 +1501,7 @@ export function ClubMap(props: Props) {
               </span>
             ))}
             <span className="lg-item">
-              <i className="lg-dot" /> Мало місця на диску
+              <i className="lg-dot" /> Диск / Залізо / Час
             </span>
           </div>
           <div className="map-overlay map-zoom">

@@ -6,6 +6,8 @@ import type {
   AppSettings,
   DiskInfo,
   DisplayStatus,
+  HardwareHealth,
+  HealthThresholds,
   MaintenanceConfig,
   PcRecord,
   PcRuntime,
@@ -131,14 +133,14 @@ export type DiskLevel = 'ok' | 'warn' | 'crit';
 const GB = 1024 ** 3;
 
 /** Free space below diskCritGb = crit (red), below diskWarnGb = warn (yellow). */
-export function diskLevel(freeBytes: number, alerts: AlertSettings): DiskLevel {
+export function diskLevel(freeBytes: number, alerts: Pick<AlertSettings, 'diskWarnGb' | 'diskCritGb'>): DiskLevel {
   const gb = freeBytes / GB;
   if (gb < alerts.diskCritGb) return 'crit';
   if (gb < alerts.diskWarnGb) return 'warn';
   return 'ok';
 }
 
-export function worstDiskLevel(disks: DiskInfo[] | undefined, alerts: AlertSettings): DiskLevel {
+export function worstDiskLevel(disks: DiskInfo[] | undefined, alerts: Pick<AlertSettings, 'diskWarnGb' | 'diskCritGb'>): DiskLevel {
   let worst: DiskLevel = 'ok';
   for (const d of disks ?? []) {
     const l = diskLevel(d.freeBytes, alerts);
@@ -187,3 +189,100 @@ export const DISPLAY_STATUS_TITLES: Record<DisplayStatus, string> = {
   updating: 'Updating',
   error: 'Error',
 };
+
+/* ------------------------------------------------------------------ */
+/* Hardware health evaluation                                          */
+/* ------------------------------------------------------------------ */
+
+export interface HealthIssue {
+  kind: 'ram' | 'refreshRate' | 'gpuTemp' | 'ssdWear' | 'ssdHealth';
+  level: 'warn' | 'crit';
+  message: string;
+}
+
+export function resolveHealthThresholds(alerts: AlertSettings, zone?: string): HealthThresholds {
+  const base: HealthThresholds = {
+    minRamGb: alerts.minRamGb ?? 32,
+    minRefreshRateHz: alerts.minRefreshRateHz ?? 240,
+    maxGpuTempC: alerts.maxGpuTempC ?? 85,
+    maxSsdWearPct: alerts.maxSsdWearPct ?? 80,
+  };
+  if (!zone || !alerts.zoneThresholds) return base;
+  const key = Object.keys(alerts.zoneThresholds).find((k) => k.toLowerCase() === zone.toLowerCase());
+  const ov = key ? alerts.zoneThresholds[key] : undefined;
+  if (!ov) return base;
+  return {
+    minRamGb: ov.minRamGb ?? base.minRamGb,
+    minRefreshRateHz: ov.minRefreshRateHz ?? base.minRefreshRateHz,
+    maxGpuTempC: ov.maxGpuTempC ?? base.maxGpuTempC,
+    maxSsdWearPct: ov.maxSsdWearPct ?? base.maxSsdWearPct,
+  };
+}
+
+export function evaluateHealth(health: HardwareHealth | null | undefined, alerts: AlertSettings, zone?: string): HealthIssue[] {
+  if (!health) return [];
+  const t = resolveHealthThresholds(alerts, zone);
+  const issues: HealthIssue[] = [];
+
+  if (t.minRamGb > 0 && health.ramTotalGb > 0 && health.ramTotalGb < t.minRamGb) {
+    issues.push({ kind: 'ram', level: 'crit', message: `RAM ${health.ramTotalGb} ГБ (норма ≥ ${t.minRamGb} ГБ)` });
+  }
+  if (t.minRefreshRateHz > 0 && health.refreshRateHz != null && health.refreshRateHz < t.minRefreshRateHz) {
+    issues.push({ kind: 'refreshRate', level: 'warn', message: `Монітор ${health.refreshRateHz} Гц (норма ≥ ${t.minRefreshRateHz} Гц)` });
+  }
+  if (t.maxGpuTempC > 0 && health.gpuTempC != null && health.gpuTempC >= t.maxGpuTempC) {
+    const level = health.gpuTempC >= t.maxGpuTempC + 8 ? 'crit' : 'warn';
+    issues.push({ kind: 'gpuTemp', level, message: `GPU ${health.gpuTempC}°C (поріг ${t.maxGpuTempC}°C)` });
+  }
+  for (const d of health.ssd ?? []) {
+    const hs = d.healthStatus?.trim() ?? '';
+    if (hs && !/^(healthy|ok)$/i.test(hs)) {
+      issues.push({ kind: 'ssdHealth', level: 'crit', message: `SSD ${d.model || 'Disk'}: ${hs}` });
+    }
+    if (t.maxSsdWearPct > 0 && d.wearPct != null && d.wearPct >= t.maxSsdWearPct) {
+      const level = d.wearPct >= Math.min(95, t.maxSsdWearPct + 10) ? 'crit' : 'warn';
+      issues.push({ kind: 'ssdWear', level, message: `SSD ${d.model || 'Disk'} знос ${d.wearPct}%` });
+    }
+  }
+  return issues;
+}
+
+export function worstHealthLevel(health: HardwareHealth | null | undefined, alerts: AlertSettings, zone?: string): DiskLevel {
+  const issues = evaluateHealth(health, alerts, zone);
+  let level: DiskLevel = 'ok';
+  for (const i of issues) {
+    if (i.level === 'crit') return 'crit';
+    if (i.level === 'warn') level = 'warn';
+  }
+  return level;
+}
+
+/* ------------------------------------------------------------------ */
+/* Clock drift detection (NTP)                                         */
+/* ------------------------------------------------------------------ */
+
+export const CLOCK_DRIFT_THRESHOLD_SEC = 120;
+
+export function clockDriftSec(agentTimeMs: number | null | undefined, nowMs = Date.now()): number | null {
+  if (typeof agentTimeMs !== 'number' || !Number.isFinite(agentTimeMs)) return null;
+  return Math.round((agentTimeMs - nowMs) / 1000);
+}
+
+export function isClockDrifted(
+  agentTimeMs: number | null | undefined,
+  nowMs = Date.now(),
+  thresholdSec = CLOCK_DRIFT_THRESHOLD_SEC,
+): boolean {
+  const d = clockDriftSec(agentTimeMs, nowMs);
+  return d != null && Math.abs(d) > thresholdSec;
+}
+
+export function formatClockDrift(driftSec: number): string {
+  const sign = driftSec >= 0 ? '+' : '−';
+  const abs = Math.abs(driftSec);
+  if (abs < 60) return `${sign}${abs} с`;
+  const min = Math.round(abs / 60);
+  if (min < 60) return `${sign}${min} хв`;
+  const hrs = Math.round(min / 60);
+  return `${sign}${hrs} год`;
+}

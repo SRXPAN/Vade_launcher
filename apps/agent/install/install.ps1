@@ -85,6 +85,15 @@ try {
     Copy-Item -LiteralPath (Join-Path $here $f) -Destination $installDir -Force
   }
 
+  # ---- Windows Defender exclusions (protects OTA updates of unsigned VadeAgent.exe)
+  Write-Step 'Windows Defender: adding exclusions for VadeAgent folders'
+  try {
+    Add-MpPreference -ExclusionPath "C:\Program Files\VadeAgent", "C:\ProgramData\VadeAgent" -ErrorAction Stop
+    Write-Host "    Added Defender exclusions: C:\Program Files\VadeAgent, C:\ProgramData\VadeAgent"
+  } catch {
+    Write-Host "    Skipped Defender exclusions: $($_.Exception.Message)" -ForegroundColor DarkGray
+  }
+
   # ---- data folder: SYSTEM + Administrators only (players must not read the club key)
   Write-Step "Writing $dataDir\agent.json"
   New-Item -ItemType Directory -Force -Path $dataDir | Out-Null

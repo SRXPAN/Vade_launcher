@@ -1,6 +1,6 @@
-import { Copy, Eye, EyeOff, FolderOpen, HardDrive, KeyRound, Monitor, Network, Package, RefreshCw, TriangleAlert } from 'lucide-react';
+import { Copy, Cpu, Eye, EyeOff, FolderOpen, HardDrive, KeyRound, Monitor, Network, Package, RefreshCw, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
-import type { AppSettings, ThemeMode } from '@vade/protocol';
+import type { AppSettings, HealthThresholds, ThemeMode } from '@vade/protocol';
 import type { AppInfo } from '../shared/api';
 import { api, errorText } from './api';
 import { SaveBar } from './SaveBar';
@@ -73,6 +73,28 @@ export function SettingsView({ settings, onSaved, info }: Props) {
                 <input className="input" type="number" value={n.wolPort} onChange={(e) => update((d) => void (d.network.wolPort = Number(e.target.value)))} />
               </div>
             </div>
+            <div style={{ marginTop: 10 }}>
+              <Option
+                title="Автопідхоплення зміни IP по MAC (UDP-маяк)"
+                desc="Якщо роутер видасть ігровому ПК новий IP по DHCP, агент повідомить свій MAC по UDP, а адмінка автоматично оновить IP у pcs.json і перепідключиться."
+                on={n.discoveryEnabled}
+                onChange={(v) => update((d) => void (d.network.discoveryEnabled = v))}
+              >
+                <div className="inline-fields">
+                  <div className="field">
+                    <label>Порт маяка (UDP)</label>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={n.discoveryPort}
+                      onChange={(e) => update((d) => void (d.network.discoveryPort = Number(e.target.value)))}
+                    />
+                  </div>
+                </div>
+              </Option>
+            </div>
           </section>
 
           <section className="section">
@@ -92,6 +114,109 @@ export function SettingsView({ settings, onSaved, info }: Props) {
                   <span style={{ color: 'var(--err)' }}>Червоний</span>, якщо менше ніж, ГБ
                 </label>
                 <input className="input" type="number" min={1} value={draft.alerts.diskCritGb} onChange={(e) => update((d) => void (d.alerts.diskCritGb = Number(e.target.value)))} />
+              </div>
+            </div>
+          </section>
+
+          <section className="section">
+            <h2>
+              <Cpu size={17} /> Здоров'я ПК (пороги заліза)
+            </h2>
+            <div className="hint">
+              Контроль RAM, герцовки монітора, температури GPU та зносу SSD. Значення 0 вимикає перевірку порогу.
+            </div>
+            <div className="form-grid">
+              <div className="field">
+                <label>Мін. RAM, ГБ</label>
+                <input className="input" type="number" min={0} max={1024} value={draft.alerts.minRamGb} onChange={(e) => update((d) => void (d.alerts.minRamGb = Number(e.target.value)))} />
+              </div>
+              <div className="field">
+                <label>Мін. герцовка монітора, Гц</label>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  max={1000}
+                  value={draft.alerts.minRefreshRateHz}
+                  onChange={(e) => update((d) => void (d.alerts.minRefreshRateHz = Number(e.target.value)))}
+                />
+              </div>
+              <div className="field">
+                <label>Макс. температура GPU, °C</label>
+                <input className="input" type="number" min={0} max={120} value={draft.alerts.maxGpuTempC} onChange={(e) => update((d) => void (d.alerts.maxGpuTempC = Number(e.target.value)))} />
+              </div>
+              <div className="field">
+                <label>Макс. знос SSD, %</label>
+                <input className="input" type="number" min={0} max={100} value={draft.alerts.maxSsdWearPct} onChange={(e) => update((d) => void (d.alerts.maxSsdWearPct = Number(e.target.value)))} />
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <div className="label" style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
+                Окремі пороги по зонах (наприклад Stream / VIP)
+              </div>
+              {Object.entries(draft.alerts.zoneThresholds ?? {}).map(([zoneName, ov]) => {
+                const setZoneField = (k: keyof HealthThresholds, val: string) =>
+                  update((d) => {
+                    const map = (d.alerts.zoneThresholds ??= {});
+                    const cur = (map[zoneName] ??= {});
+                    if (val.trim() === '') delete cur[k];
+                    else cur[k] = Number(val);
+                  });
+                return (
+                  <div key={zoneName} className="extra-app-row" style={{ marginBottom: 8 }}>
+                    <div className="extra-app-top">
+                      <span className={`tag zone-${zoneName}`}>{zoneName}</span>
+                      <span className="spacer" />
+                      <button
+                        type="button"
+                        className="btn small ghost danger"
+                        onClick={() =>
+                          update((d) => {
+                            if (d.alerts.zoneThresholds) delete d.alerts.zoneThresholds[zoneName];
+                          })
+                        }
+                      >
+                        Прибрати
+                      </button>
+                    </div>
+                    <div className="inline-fields">
+                      <div className="field" style={{ width: 105 }}>
+                        <label>RAM ≥ ГБ</label>
+                        <input className="input" type="number" placeholder={String(draft.alerts.minRamGb)} value={ov.minRamGb ?? ''} onChange={(e) => setZoneField('minRamGb', e.target.value)} />
+                      </div>
+                      <div className="field" style={{ width: 105 }}>
+                        <label>Гц ≥</label>
+                        <input className="input" type="number" placeholder={String(draft.alerts.minRefreshRateHz)} value={ov.minRefreshRateHz ?? ''} onChange={(e) => setZoneField('minRefreshRateHz', e.target.value)} />
+                      </div>
+                      <div className="field" style={{ width: 105 }}>
+                        <label>GPU ≤ °C</label>
+                        <input className="input" type="number" placeholder={String(draft.alerts.maxGpuTempC)} value={ov.maxGpuTempC ?? ''} onChange={(e) => setZoneField('maxGpuTempC', e.target.value)} />
+                      </div>
+                      <div className="field" style={{ width: 105 }}>
+                        <label>SSD ≤ %</label>
+                        <input className="input" type="number" placeholder={String(draft.alerts.maxSsdWearPct)} value={ov.maxSsdWearPct ?? ''} onChange={(e) => setZoneField('maxSsdWearPct', e.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {['Stream', 'VIP', 'Regular'].map((z) =>
+                  draft.alerts.zoneThresholds?.[z] ? null : (
+                    <button
+                      key={z}
+                      type="button"
+                      className="btn small"
+                      onClick={() =>
+                        update((d) => {
+                          (d.alerts.zoneThresholds ??= {})[z] = {};
+                        })
+                      }
+                    >
+                      + Поріг для {z}
+                    </button>
+                  ),
+                )}
               </div>
             </div>
           </section>
@@ -187,6 +312,21 @@ export function SettingsView({ settings, onSaved, info }: Props) {
               on={draft.ui.closeToTray}
               onChange={(v) => update((d) => void (d.ui.closeToTray = v))}
             />
+            <div className="opt">
+              <div className="opt-text">
+                <div className="opt-title">Зберігати історію запусків, днів</div>
+                <div className="opt-desc">Старіші записи автоматично очищуються з history.json.</div>
+              </div>
+              <input
+                className="input"
+                style={{ width: 82 }}
+                type="number"
+                min={1}
+                max={365}
+                value={draft.ui.historyRetentionDays}
+                onChange={(e) => update((d) => void (d.ui.historyRetentionDays = Number(e.target.value)))}
+              />
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
               <button className="btn small" onClick={() => void api.openDataDir()}>
                 <FolderOpen size={14} /> Папка даних

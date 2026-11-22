@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Agent } from './agent';
+import { AgentBeaconSender } from './discovery';
 import { installedServicePaths, takeUpdateResult, writeStartedMarker } from './update/selfUpdate';
 import { Logger } from './logger';
 import { AgentServer } from './server';
@@ -75,6 +76,8 @@ async function main(): Promise<void> {
   await server.start();
   log.info(`Очікую адмін-панель на ${store.file.bind}:${server.port}`);
   await agent.init();
+  const beacon = new AgentBeaconSender(server.port, store.file.discoveryPort);
+  beacon.start();
 
   // Self-update bookkeeping: report the helper's verdict, drop a leftover download, tell the helper we run.
   const update = takeUpdateResult(opts.dataDir);
@@ -88,6 +91,7 @@ async function main(): Promise<void> {
     if (stopping) return;
     stopping = true;
     log.info(`Зупинка (${sig})…`);
+    beacon.stop();
     await agent.shutdown();
     await server.close();
     process.exit(0);

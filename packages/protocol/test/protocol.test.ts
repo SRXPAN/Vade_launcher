@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAgentConfig,
+  clockDriftSec,
+  DEFAULT_ALERTS,
   defaultSettings,
   deriveDisplayStatus,
+  evaluateHealth,
+  formatClockDrift,
   hostsInCidr,
+  isClockDrifted,
   lastOccurrence,
   nextOccurrence,
   normalizeMac,
@@ -11,8 +16,10 @@ import {
   parseAppIds,
   parseCidr,
   pcRunTime,
+  resolveHealthThresholds,
   SEED_PCS,
   validatePc,
+  worstHealthLevel,
   type PcRuntime,
 } from '../src/index';
 import { agentProof, authMac, newClubKey, safeEqual, seal, sessionKey, unseal } from '../src/auth';
@@ -69,14 +76,27 @@ describe('validation', () => {
 describe('agent config', () => {
   it('applies per-PC overrides and has a stable revision', () => {
     const settings = defaultSettings('k');
+    expect(settings.maintenance.update.ignoreAppIds).toEqual([]);
+    expect(settings.maintenance.update.treatNoSubscriptionAsError).toBe(false);
     const pc = { ...SEED_PCS[0], overrides: { afterAction: 'shutdown' as const, updateAppIds: [730] } };
     const a = buildAgentConfig(settings, pc);
     expect(a.maintenance.after.action).toBe('shutdown');
-    expect(a.maintenance.update).toMatchObject({ mode: 'list', appIds: [730] });
+    expect(a.maintenance.update).toMatchObject({ mode: 'list', appIds: [730], ignoreAppIds: [], treatNoSubscriptionAsError: false });
     expect(a.schedule.runTime).toBe('11:00');
     expect(buildAgentConfig(settings, pc).rev).toBe(a.rev);
     expect(buildAgentConfig(settings, { ...pc, overrides: { scheduleEnabled: false } }).schedule.enabled).toBe(false);
     expect(settings.maintenance.after.action).toBe('hibernate'); // global settings untouched
+
+    // Changing ignoreAppIds or treatNoSubscriptionAsError bumps config rev so agents pick it up
+    const withIgnore = structuredClone(settings);
+    withIgnore.maintenance.update.ignoreAppIds = [1422450];
+    const b = buildAgentConfig(withIgnore, SEED_PCS[0]);
+    expect(b.maintenance.update.ignoreAppIds).toEqual([1422450]);
+    expect(b.rev).not.toBe(buildAgentConfig(settings, SEED_PCS[0]).rev);
+
+    const withStrict = structuredClone(settings);
+    withStrict.maintenance.update.treatNoSubscriptionAsError = true;
+    expect(buildAgentConfig(withStrict, SEED_PCS[0]).rev).not.toBe(buildAgentConfig(settings, SEED_PCS[0]).rev);
   });
 });
 
@@ -88,6 +108,32 @@ describe('display status', () => {
     expect(deriveDisplayStatus({ ...base, link: 'auth-failed' })).toBe('error');
     const status = { state: 'updating', job: null, lastJob: null, nextRunAt: null, pendingPower: null, configRev: null, steamcmdInstalled: true, dryRun: false } as const;
     expect(deriveDisplayStatus({ ...base, link: 'online', status })).toBe('updating');
+    // Ignored / skipped_no_subscription apps with result 'ok' keep PC Online (not Error)
+    expect(
+      deriveDisplayStatus({
+        ...base,
+        link: 'online',
+        status: {
+          ...status,
+          state: 'idle',
+          lastJob: {
+            id: 'j1',
+            mode: 'scheduled',
+            startedAt: '2026-01-01T00:00:00Z',
+            finishedAt: '2026-01-01T00:05:00Z',
+            steps: [],
+            apps: [
+              { appId: 730, library: 'C:\\Steam', status: 'ok' },
+              { appId: 1422450, library: 'C:\\Steam', status: 'ignored' },
+              { appId: 578080, library: 'C:\\Steam', status: 'skipped_no_subscription' },
+            ],
+            progress: null,
+            errors: 0,
+            result: 'ok',
+          },
+        },
+      }),
+    ).toBe('online');
   });
 });
 
@@ -104,5 +150,71 @@ describe('auth', () => {
     expect(sealed.ct).not.toContain('123');
     expect(unseal(sessionKey(key, a, b), sealed)).toBe('пароль-123');
     expect(() => unseal(sessionKey(key, a, 'x'), sealed)).toThrow();
+  });
+});
+
+describe('hardware health thresholds', () => {
+  it('detects RAM, monitor Hz, GPU temp, SSD wear and unhealthy SMART status with zone overrides', () => {
+    expect(evaluateHealth(null, DEFAULT_ALERTS)).toEqual([]);
+    expect(evaluateHealth(undefined, DEFAULT_ALERTS)).toEqual([]);
+
+    const healthy = {
+      ramTotalGb: 32,
+      refreshRateHz: 240,
+      gpuTempC: 65,
+      cpuTempC: null,
+      ssd: [{ model: 'Samsung 980', healthStatus: 'Healthy', wearPct: 12, tempC: 42 }],
+    };
+    expect(evaluateHealth(healthy, DEFAULT_ALERTS, 'Regular')).toEqual([]);
+    expect(worstHealthLevel(healthy, DEFAULT_ALERTS, 'Regular')).toBe('ok');
+
+    // Low refresh rate -> warn
+    const lowHz = { ...healthy, refreshRateHz: 60 };
+    expect(evaluateHealth(lowHz, DEFAULT_ALERTS)).toMatchObject([{ kind: 'refreshRate', level: 'warn' }]);
+    expect(worstHealthLevel(lowHz, DEFAULT_ALERTS)).toBe('warn');
+
+    // Missing RAM stick (16 GB < 32 GB) -> crit
+    const lowRam = { ...healthy, ramTotalGb: 16 };
+    expect(evaluateHealth(lowRam, DEFAULT_ALERTS)).toMatchObject([{ kind: 'ram', level: 'crit' }]);
+    expect(worstHealthLevel(lowRam, DEFAULT_ALERTS)).toBe('crit');
+
+    // Hot GPU & high SSD wear
+    const hot = {
+      ...healthy,
+      gpuTempC: 88,
+      ssd: [{ model: 'WD', healthStatus: 'Healthy', wearPct: 82, tempC: 55 }],
+    };
+    expect(evaluateHealth(hot, DEFAULT_ALERTS).map((i) => i.kind)).toEqual(['gpuTemp', 'ssdWear']);
+    expect(worstHealthLevel(hot, DEFAULT_ALERTS)).toBe('warn');
+
+    // Unhealthy SMART -> crit
+    const badSsd = {
+      ...healthy,
+      ssd: [{ model: 'Kingston', healthStatus: 'Warning', wearPct: 50, tempC: 40 }],
+    };
+    expect(worstHealthLevel(badSsd, DEFAULT_ALERTS)).toBe('crit');
+
+    // Zone override: Stream requires 360 Hz & 64 GB RAM
+    const withZones = {
+      ...DEFAULT_ALERTS,
+      zoneThresholds: { Stream: { minRamGb: 64, minRefreshRateHz: 360 } },
+    };
+    expect(resolveHealthThresholds(withZones, 'Stream')).toMatchObject({ minRamGb: 64, minRefreshRateHz: 360, maxGpuTempC: 85 });
+    expect(worstHealthLevel(healthy, withZones, 'Stream')).toBe('crit');
+    expect(worstHealthLevel(healthy, withZones, 'Regular')).toBe('ok');
+  });
+});
+
+describe('clock drift detection', () => {
+  it('flags drift only when abs(agentTimeMs - nowMs) exceeds 120 seconds', () => {
+    const now = 1_700_000_000_000;
+    expect(isClockDrifted(undefined, now)).toBe(false);
+    expect(isClockDrifted(now + 120_000, now)).toBe(false);
+    expect(isClockDrifted(now - 120_000, now)).toBe(false);
+    expect(isClockDrifted(now + 121_000, now)).toBe(true);
+    expect(isClockDrifted(now - 300_000, now)).toBe(true);
+    expect(clockDriftSec(now + 300_000, now)).toBe(300);
+    expect(formatClockDrift(300)).toBe('+5 хв');
+    expect(formatClockDrift(-180)).toBe('−3 хв');
   });
 });

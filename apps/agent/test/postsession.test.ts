@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_POST_SESSION_CLEAN, type Occupancy, type PostSessionCleanSettings } from '@vade/protocol';
 import { cleanBrowserSessions } from '../src/jobs/browsers';
+import { cleanLauncherSessions, stripBattleNetAccounts, stripIniSection } from '../src/jobs/launchers';
 import { processesToClose, runQuickClean } from '../src/jobs/quickClean';
 import { Logger } from '../src/logger';
 import { PostSessionWatcher } from '../src/occupancy/postSession';
@@ -63,7 +64,8 @@ describe('browser session cleaning (real files in a fake C:\\Users)', () => {
     touch(user, 'AppData', 'Local', 'Steam', 'htmlcache', 'x');
 
     const killed: string[][] = [];
-    const settings: PostSessionCleanSettings = { ...DEFAULT_POST_SESSION_CLEAN, closeApps: ['steam.exe', 'discord'], browsers: ['chrome'] };
+    const noLaunchers = { riot: false, epic: false, battlenet: false, ea: false, discord: false, telegram: false };
+    const settings: PostSessionCleanSettings = { ...DEFAULT_POST_SESSION_CLEAN, closeApps: ['steam.exe', 'discord'], browsers: ['chrome'], cleanLaunchers: noLaunchers };
     const r = await runQuickClean({
       sys,
       settings,
@@ -82,12 +84,81 @@ describe('browser session cleaning (real files in a fake C:\\Users)', () => {
   });
 
   it('closes the browsers it cleans, without duplicates', () => {
-    expect(processesToClose({ ...DEFAULT_POST_SESSION_CLEAN, closeApps: ['Chrome.exe', 'discord.exe'], browsers: ['chrome', 'firefox'] })).toEqual([
+    const noLaunchers = { riot: false, epic: false, battlenet: false, ea: false, discord: false, telegram: false };
+    expect(processesToClose({ ...DEFAULT_POST_SESSION_CLEAN, closeApps: ['Chrome.exe', 'discord.exe'], browsers: ['chrome', 'firefox'], cleanLaunchers: noLaunchers })).toEqual([
       'Chrome.exe',
       'discord.exe',
       'firefox.exe',
     ]);
-    expect(processesToClose({ ...DEFAULT_POST_SESSION_CLEAN, closeApps: [], cleanBrowsers: false })).toEqual([]);
+    expect(processesToClose({ ...DEFAULT_POST_SESSION_CLEAN, closeApps: [], cleanBrowsers: false, cleanLaunchers: noLaunchers })).toEqual([]);
+  });
+
+  it('closes enabled launcher processes and cleans launcher session tokens without touching games', async () => {
+    const procs = processesToClose({
+      ...DEFAULT_POST_SESSION_CLEAN,
+      closeApps: ['steam.exe'],
+      cleanBrowsers: false,
+      cleanLaunchers: { riot: true, epic: true, battlenet: true, ea: true, discord: true, telegram: false },
+    });
+    expect(procs).toContain('RiotClientServices.exe');
+    expect(procs).toContain('EpicGamesLauncher.exe');
+    expect(procs).toContain('Battle.net.exe');
+    expect(procs).toContain('EADesktop.exe');
+    expect(procs).toContain('EABackgroundService.exe');
+    expect(procs).toContain('Discord.exe');
+    expect(procs).not.toContain('Telegram.exe');
+
+    const user = path.join(tmp, 'UsersLaunchers', 'Player');
+    const riotYaml = touch(user, 'AppData', 'Local', 'Riot Games', 'Riot Client', 'Data', 'RiotGamesPrivateSettings.yaml');
+    const discordDb = touch(user, 'AppData', 'Roaming', 'discord', 'Local Storage', 'leveldb', '000.log');
+    const discordCookies = touch(user, 'AppData', 'Roaming', 'discord', 'Network', 'Cookies');
+    const epicIni = path.join(user, 'AppData', 'Local', 'EpicGamesLauncher', 'Saved', 'Config', 'Windows', 'GameUserSettings.ini');
+    fs.mkdirSync(path.dirname(epicIni), { recursive: true });
+    fs.writeFileSync(epicIni, '[Launcher]\nLastActive=1\n\n[RememberMe]\nData=secret_token\n\n[Analytics]\nEnabled=True\n');
+    const epicWebcache = touch(user, 'AppData', 'Local', 'EpicGamesLauncher', 'Saved', 'webcache_4430', 'Cache');
+    const bnetCfg = path.join(user, 'AppData', 'Roaming', 'Battle.net', 'Battle.net.config');
+    fs.mkdirSync(path.dirname(bnetCfg), { recursive: true });
+    fs.writeFileSync(
+      bnetCfg,
+      JSON.stringify({ Client: { SavedAccountNames: 'player@club.gg', AutoLogin: true, InstallPath: 'D:\\Games\\Overwatch' } }),
+    );
+    const bnetCache = touch(user, 'AppData', 'Local', 'Battle.net', 'BrowserCache', 'x');
+    const eaCache = touch(user, 'AppData', 'Local', 'Electronic Arts', 'EA Desktop', 'cache', 'x');
+    const eaToken = touch(user, 'AppData', 'Local', 'Electronic Arts', 'EA Desktop', 'user_123.ini');
+    const tgData = touch(user, 'AppData', 'Roaming', 'Telegram Desktop', 'tdata', 'key_datas');
+
+    const res = await cleanLauncherSessions(sys, [user], {
+      riot: true,
+      epic: true,
+      battlenet: true,
+      ea: true,
+      discord: true,
+      telegram: false,
+    });
+    expect(res.failed).toBe(0);
+    expect(res.cleaned.sort()).toEqual(['battlenet', 'discord', 'ea', 'epic', 'riot']);
+    expect(fs.existsSync(riotYaml)).toBe(false);
+    expect(fs.existsSync(discordDb)).toBe(false);
+    expect(fs.existsSync(discordCookies)).toBe(false);
+    expect(fs.existsSync(epicWebcache)).toBe(false);
+    expect(fs.existsSync(bnetCache)).toBe(false);
+    expect(fs.existsSync(eaCache)).toBe(false);
+    expect(fs.existsSync(eaToken)).toBe(false);
+    // Telegram untouched when telegram: false
+    expect(fs.existsSync(tgData)).toBe(true);
+    // Ini & Battle.net non-auth settings preserved
+    const iniAfter = fs.readFileSync(epicIni, 'utf8');
+    expect(iniAfter).not.toContain('RememberMe');
+    expect(iniAfter).toContain('[Launcher]');
+    expect(iniAfter).toContain('[Analytics]');
+    const bnetAfter = JSON.parse(fs.readFileSync(bnetCfg, 'utf8'));
+    expect(bnetAfter.Client.SavedAccountNames).toBe('');
+    expect(bnetAfter.Client.AutoLogin).toBe(false);
+    expect(bnetAfter.Client.InstallPath).toBe('D:\\Games\\Overwatch');
+
+    // Pure helpers
+    expect(stripIniSection('[A]\nx=1\n[RememberMe]\ny=2\n[B]\nz=3', 'RememberMe')).toBe('[A]\nx=1\n[B]\nz=3');
+    expect(stripBattleNetAccounts('not json')).toBeNull();
   });
 });
 
