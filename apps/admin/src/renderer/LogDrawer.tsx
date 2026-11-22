@@ -48,6 +48,7 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
   const [ignoringApp, setIgnoringApp] = useState<number | null>(null);
   const [exportingDiag, setExportingDiag] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -64,10 +65,28 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
   }, [pc.id]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (confirmSenet) return;
+      if (document.querySelector('[role="dialog"], .backdrop')) return;
+      onClose();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, confirmSenet]);
+
+  useEffect(() => {
+    const onPointerDown = (e: MouseEvent) => {
+      if (e.button !== 0 || confirmSenet) return;
+      const target = e.target as Element | null;
+      if (!target) return;
+      if (drawerRef.current?.contains(target)) return;
+      if (target.closest('.backdrop, [role="dialog"], .menu, .map-menu, .toasts, [data-keep-drawer]')) return;
+      onClose();
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [onClose, confirmSenet]);
 
   const shown = showSteam ? lines : lines.filter((l) => l.level !== 'steam');
   useLayoutEffect(() => {
@@ -132,29 +151,32 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
   };
 
   return (
-    <aside className="drawer">
+    <aside className="drawer" ref={drawerRef}>
       <div className="drawer-head">
-        <h2>{t('log.title', { id: pc.id })}</h2>
-        <StatusBadge status={deriveDisplayStatus(rt)} />
-        <span className="host" title={rt?.info?.hostname ?? pc.ip}>
-          {rt?.info?.hostname ?? pc.ip}
-        </span>
-        <span className="spacer" />
-        <button className="btn small" disabled={!online} onClick={() => onDiag(pc.id)} title={t('log.quickDiag')}>
-          <Activity size={14} /> {t('log.quickDiag')}
-        </button>
-        <button className="btn small" disabled={exportingDiag} onClick={() => void exportZip()} title={t('log.exportZip')}>
-          {exportingDiag ? <LoaderCircle size={14} className="spin" /> : <FileArchive size={14} />} ZIP
-        </button>
-        <button className="btn small" disabled={!online || !!job} onClick={() => onAction('test', [pc.id])}>
-          <Play size={14} /> {t('log.maintenance')}
-        </button>
-        <button className="btn small" disabled={!job} onClick={() => onAction('cancel', [pc.id])}>
-          <CircleStop size={14} /> {t('common.cancel')}
-        </button>
-        <button className="icon-btn" onClick={onClose} aria-label={t('common.close')}>
-          <X size={16} />
-        </button>
+        <div className="drawer-head-top">
+          <h2>{t('log.title', { id: pc.id })}</h2>
+          <StatusBadge status={deriveDisplayStatus(rt)} />
+          <span className="host" title={rt?.info?.hostname ?? pc.ip}>
+            {rt?.info?.hostname ?? pc.ip}
+          </span>
+          <button type="button" className="icon-btn drawer-close" onClick={onClose} aria-label={t('common.close')} title={t('common.close')}>
+            <X size={16} />
+          </button>
+        </div>
+        <div className="drawer-actions">
+          <button type="button" className="btn small" disabled={!online} onClick={() => onDiag(pc.id)} title={t('log.quickDiag')}>
+            <Activity size={14} /> {t('log.quickDiag')}
+          </button>
+          <button type="button" className="btn small" disabled={exportingDiag} onClick={() => void exportZip()} title={t('log.exportZip')}>
+            {exportingDiag ? <LoaderCircle size={14} className="spin" /> : <FileArchive size={14} />} ZIP
+          </button>
+          <button type="button" className="btn small" disabled={!online || !!job} onClick={() => onAction('test', [pc.id])}>
+            <Play size={14} /> {t('log.maintenance')}
+          </button>
+          <button type="button" className="btn small" disabled={!job} onClick={() => onAction('cancel', [pc.id])}>
+            <CircleStop size={14} /> {t('common.cancel')}
+          </button>
+        </div>
       </div>
       <div className="drawer-body">
         {occ && (

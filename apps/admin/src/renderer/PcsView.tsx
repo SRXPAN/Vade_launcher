@@ -252,7 +252,8 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
   );
 
   return (
-    <div className={`pcs-view ${view}`}>
+    <div className={`pcs-view ${view}${logPcRecord ? ' has-drawer' : ''}`}>
+      <div className="pcs-main">
       <div className="toolbar">
         <div className="toolbar-row">
           <Segmented
@@ -475,6 +476,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
         ))
       )}
       {view === 'cards' && <div style={{ height: 24 }} />}
+      </div>
 
       {logPcRecord && (
         <LogDrawer

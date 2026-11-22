@@ -190,7 +190,7 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
         <button className="icon-btn" title={t('action.cleanLogins')} disabled={!online || !!job} onClick={() => act('clean-logins')}>
           <LogOut size={15} />
         </button>
-        <button className="icon-btn" title={t('pcs.liveLog')} onClick={() => onLogs(pc.id)}>
+        <button className="icon-btn" data-keep-drawer="true" title={t('pcs.liveLog')} onClick={() => onLogs(pc.id)}>
           <ScrollText size={15} />
         </button>
         <button className="icon-btn" title={t('pcs.editPc')} onClick={() => onEdit(pc)}>
