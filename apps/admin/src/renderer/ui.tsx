@@ -1,14 +1,24 @@
 import { Check, CircleCheck, Info, Minus, TriangleAlert, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { DisplayStatus } from '@vade/protocol';
-import { STATUS_LABEL } from './format';
+import { useI18n, type I18nKey } from './i18n';
+
+const STATUS_KEY: Record<DisplayStatus, I18nKey> = {
+  online: 'status.online',
+  offline: 'status.offline',
+  sleeping: 'status.sleeping',
+  cleaning: 'status.cleaning',
+  updating: 'status.updating',
+  error: 'status.error',
+};
 
 /* ---------- status badge ---------- */
 export function StatusBadge({ status }: { status: DisplayStatus }) {
+  const { t } = useI18n();
   return (
     <span className={`badge st-${status}`}>
       <span className="dot" />
-      {STATUS_LABEL[status]}
+      {t(STATUS_KEY[status])}
     </span>
   );
 }
@@ -66,6 +76,7 @@ export function Segmented<T extends string>({ value, options, onChange }: { valu
 
 /* ---------- modal ---------- */
 export function Modal(props: { title: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; icon?: ReactNode }) {
+  const { t } = useI18n();
   const { onClose } = props;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -79,7 +90,7 @@ export function Modal(props: { title: ReactNode; onClose: () => void; children: 
           {props.icon}
           <h3>{props.title}</h3>
           <span className="spacer" />
-          <button className="icon-btn" onClick={onClose} aria-label="Закрити">
+          <button className="icon-btn" onClick={onClose} aria-label={t('common.close')}>
             <X size={16} />
           </button>
         </div>
@@ -91,6 +102,7 @@ export function Modal(props: { title: ReactNode; onClose: () => void; children: 
 }
 
 export function ConfirmDialog(props: { title: string; text: ReactNode; confirmLabel: string; danger?: boolean; onConfirm: () => void; onClose: () => void }) {
+  const { t } = useI18n();
   return (
     <Modal
       title={props.title}
@@ -99,7 +111,7 @@ export function ConfirmDialog(props: { title: string; text: ReactNode; confirmLa
       footer={
         <>
           <button className="btn" onClick={props.onClose}>
-            Скасувати
+            {t('common.cancel')}
           </button>
           <button
             className={`btn ${props.danger ? 'danger solid' : 'primary'}`}
@@ -149,22 +161,23 @@ interface ToastItem {
 const ToastCtx = createContext<(kind: ToastKind, text: string) => void>(() => undefined);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
   const [items, setItems] = useState<ToastItem[]>([]);
   const seq = useRef(0);
   const push = useCallback((kind: ToastKind, text: string) => {
     const id = ++seq.current;
     setItems((list) => [...list.slice(-4), { id, kind, text }]);
-    setTimeout(() => setItems((list) => list.filter((t) => t.id !== id)), kind === 'error' ? 9000 : 5000);
+    setTimeout(() => setItems((list) => list.filter((x) => x.id !== id)), kind === 'error' ? 9000 : 5000);
   }, []);
   return (
     <ToastCtx.Provider value={push}>
       {children}
       <div className="toasts">
-        {items.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`}>
-            {t.kind === 'ok' ? <CircleCheck size={16} color="var(--ok)" /> : t.kind === 'info' ? <Info size={16} color="var(--accent)" /> : <TriangleAlert size={16} color={t.kind === 'error' ? 'var(--err)' : 'var(--warn)'} />}
-            <span>{t.text}</span>
-            <button onClick={() => setItems((l) => l.filter((x) => x.id !== t.id))} aria-label="Закрити">
+        {items.map((item) => (
+          <div key={item.id} className={`toast ${item.kind}`}>
+            {item.kind === 'ok' ? <CircleCheck size={16} color="var(--ok)" /> : item.kind === 'info' ? <Info size={16} color="var(--accent)" /> : <TriangleAlert size={16} color={item.kind === 'error' ? 'var(--err)' : 'var(--warn)'} />}
+            <span>{item.text}</span>
+            <button onClick={() => setItems((l) => l.filter((x) => x.id !== item.id))} aria-label={t('common.close')}>
               <X size={14} />
             </button>
           </div>

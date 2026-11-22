@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import type { AppSettings } from '@vade/protocol';
 import { api, errorText } from './api';
+import { useI18n } from './i18n';
 import { useToast } from './ui';
 
 /** Local editable copy of the settings with dirty tracking and save/reset. */
 export function useDraft(settings: AppSettings, onSaved: (s: AppSettings) => void) {
+  const { t } = useI18n();
   const toast = useToast();
   const [draft, setDraft] = useState(settings);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +31,7 @@ export function useDraft(settings: AppSettings, onSaved: (s: AppSettings) => voi
     try {
       const saved = await api.saveSettings(draft);
       onSaved(saved);
-      toast('ok', 'Збережено. Агенти, що на зв\'язку, отримали нові налаштування.');
+      toast('ok', t('common.savedToast'));
     } catch (e) {
       setError(errorText(e));
     } finally {

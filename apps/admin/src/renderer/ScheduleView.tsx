@@ -18,6 +18,7 @@ import {
 import { api, errorText } from './api';
 import { AppIdsInput } from './AppIdsInput';
 import { NameListInput } from './NameListInput';
+import { useI18n } from './i18n';
 import { SaveBar } from './SaveBar';
 import { Option, Segmented, Switch, useToast } from './ui';
 import { useDraft } from './useDraft';
@@ -30,6 +31,7 @@ interface Props {
 }
 
 export function ScheduleView({ settings, onSaved, pcs, setPcs }: Props) {
+  const { t } = useI18n();
   const toast = useToast();
   const { draft, update, dirty, reset, save, error, saving } = useDraft(settings, onSaved);
   const s = draft.schedule;
@@ -60,8 +62,8 @@ export function ScheduleView({ settings, onSaved, pcs, setPcs }: Props) {
   return (
     <div className="page">
       <div className="page-title">
-        <h1>Розклад і завдання</h1>
-        <span className="dim">замість club_night_sleep.bat</span>
+        <h1>{t('schedule.title')}</h1>
+        <span className="dim">{t('schedule.subtitle')}</span>
       </div>
       {error && <div className="errors">{error}</div>}
       <div className="cols">

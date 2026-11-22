@@ -18,7 +18,6 @@ export interface RemoveStats {
 
 export type ConsoleEncoding = 'oem' | 'utf8';
 
-const UTF8_DECODER_FATAL = new TextDecoder('utf-8', { fatal: true });
 const CP866_DECODER = new TextDecoder('ibm866');
 
 /**

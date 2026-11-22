@@ -4,6 +4,7 @@ import { buildSitePayload, PUBLIC_STATUS_TITLES, type AppSettings, type PcRecord
 import type { SiteEvent, SiteStatus, SiteTestResult } from '../shared/api';
 import { api, errorText } from './api';
 import { fmtDateTime } from './format';
+import { useI18n } from './i18n';
 import { SaveBar } from './SaveBar';
 import { Option } from './ui';
 import { useDraft } from './useDraft';
@@ -24,6 +25,7 @@ function fmtInterval(sec: number): string {
 }
 
 export function SiteView({ settings, onSaved, pcs, runtimes }: Props) {
+  const { t, locale } = useI18n();
   const { draft, update, dirty, reset, save, error, saving } = useDraft(settings, onSaved);
   const site = draft.site;
   const [status, setStatus] = useState<SiteStatus | null>(null);
@@ -64,8 +66,8 @@ export function SiteView({ settings, onSaved, pcs, runtimes }: Props) {
   return (
     <div className="page">
       <div className="page-title">
-        <h1>Інтеграція з сайтом</h1>
-        <span className="dim">статуси столів для карти бронювання</span>
+        <h1>{t('site.title')}</h1>
+        <span className="dim">{t('site.subtitle')}</span>
       </div>
       {error && <div className="errors">{error}</div>}
       <div className="cols">
@@ -185,7 +187,7 @@ export function SiteView({ settings, onSaved, pcs, runtimes }: Props) {
                     <tbody>
                       {status.history.slice(0, 10).map((a, i) => (
                         <tr key={i}>
-                          <td>{new Date(a.at).toLocaleTimeString('uk-UA')}</td>
+                          <td>{new Date(a.at).toLocaleTimeString(locale)}</td>
                           <td>{EVENT_LABEL[a.event]}</td>
                           <td className={a.ok ? 's-ok' : 's-error'}>{a.ok ? `HTTP ${a.status}` : a.error}</td>
                           <td style={{ textAlign: 'right' }}>{a.ms}</td>

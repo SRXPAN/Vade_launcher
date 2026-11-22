@@ -83,13 +83,14 @@ export function fmtTime(iso: string | null | undefined): string {
   return new Date(iso).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
 }
 
-export function fmtDateTime(iso: string | null | undefined): string {
+export function fmtDateTime(iso: string | null | undefined, locale = 'uk-UA', todayPrefix?: string): string {
   if (!iso) return '—';
   const d = new Date(iso);
   const today = new Date();
   const sameDay = d.toDateString() === today.toDateString();
-  const time = d.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
-  return sameDay ? `сьогодні ${time}` : `${d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' })} ${time}`;
+  const time = d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
+  if (sameDay) return todayPrefix ? todayPrefix.replace('{time}', time) : `сьогодні ${time}`;
+  return `${d.toLocaleDateString(locale, { day: '2-digit', month: '2-digit' })} ${time}`;
 }
 
 export function fmtAgo(iso: string | null | undefined): string {

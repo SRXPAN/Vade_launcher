@@ -122,6 +122,7 @@ interface Props {
   onSelect: (ids: number[], mode: SelectMode) => void;
   onAction: (action: PcAction, ids: number[]) => void;
   onLogs: (id: number) => void;
+  onDiag: (id: number) => void;
   onEdit: (pc: PcRecord) => void;
   onAddPc: (id: number, zone: string, onCreated?: (pc: PcRecord) => void) => void;
   onSteamLogin: (ids: number[]) => void;
@@ -1553,6 +1554,7 @@ export function ClubMap(props: Props) {
             onClose={() => setMenu(null)}
             onAction={props.onAction}
             onLogs={props.onLogs}
+            onDiag={props.onDiag}
             onEdit={props.onEdit}
             onSteam={props.onSteamLogin}
             onUpdateAgent={props.onUpdateAgent}

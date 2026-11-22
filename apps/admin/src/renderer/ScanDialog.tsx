@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { AppSettings, PcRecord } from '@vade/protocol';
 import type { ScanHost, ScanProgress } from '../shared/api';
 import { api, errorText } from './api';
+import { useI18n } from './i18n';
 import { Modal, useToast } from './ui';
 
 interface Props {
@@ -16,6 +17,7 @@ interface Props {
 type Row = { host: ScanHost; byIp?: PcRecord; byMac?: PcRecord };
 
 export function ScanDialog({ pcs, settings, onClose, onAdd, onPcsChanged }: Props) {
+  const { t } = useI18n();
   const toast = useToast();
   const [hosts, setHosts] = useState<ScanHost[] | null>(null);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
@@ -73,7 +75,7 @@ export function ScanDialog({ pcs, settings, onClose, onAdd, onPcsChanged }: Prop
             <RefreshCw size={15} /> Сканувати ще раз
           </button>
           <button className="btn primary" onClick={onClose}>
-            Готово
+            {t('common.done')}
           </button>
         </>
       }
@@ -137,8 +139,8 @@ export function ScanDialog({ pcs, settings, onClose, onAdd, onPcsChanged }: Prop
                   <tr key={host.ip}>
                     <td className="mono">{host.ip}</td>
                     <td className="mono">{host.mac ?? <span className="dim">—</span>}</td>
-                    <td>{host.alive ? <span className="s-ok">так</span> : <span className="dim">ні</span>}</td>
-                    <td>{host.agent ? <span className="s-ok">так</span> : <span className="dim">ні</span>}</td>
+                    <td>{host.alive ? <span className="s-ok">{t('common.yes')}</span> : <span className="dim">{t('common.no')}</span>}</td>
+                    <td>{host.agent ? <span className="s-ok">{t('common.yes')}</span> : <span className="dim">{t('common.no')}</span>}</td>
                     <td>{state}</td>
                     <td style={{ textAlign: 'right' }}>{action}</td>
                   </tr>

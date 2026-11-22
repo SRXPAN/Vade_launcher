@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { JobHistoryEntry, PcRecord } from '@vade/protocol';
 import { api } from './api';
 import { fmtDateTime } from './format';
+import { useI18n } from './i18n';
 
 interface Props {
   pcs: PcRecord[];
@@ -22,6 +23,7 @@ function fmtDuration(sec: number): string {
 }
 
 export function HistoryView({ pcs }: Props) {
+  const { t, locale } = useI18n();
   const [entries, setEntries] = useState<JobHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [pcFilter, setPcFilter] = useState<string>('all');
@@ -86,8 +88,8 @@ export function HistoryView({ pcs }: Props) {
   return (
     <div className="page">
       <div className="page-title">
-        <h1>Історія запусків</h1>
-        <span className="dim">журнал обслуговування та виявлення проблемних ПК</span>
+        <h1>{t('history.title')}</h1>
+        <span className="dim">{t('history.subtitle')}</span>
       </div>
 
       <section className="section">
@@ -186,7 +188,7 @@ export function HistoryView({ pcs }: Props) {
                   const rec = pcById.get(e.pcId);
                   return (
                     <tr key={`${e.pcId}:${e.id}`}>
-                      <td>{fmtDateTime(e.finishedAt)}</td>
+                      <td>{fmtDateTime(e.finishedAt, locale, t('common.todayTime'))}</td>
                       <td>
                         <strong>№{e.pcId}</strong> {rec ? <span className={`tag zone-${rec.zone}`}>{rec.zone}</span> : null}
                       </td>

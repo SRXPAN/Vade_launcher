@@ -1,5 +1,6 @@
 /** Hover card, view-mode PC menu, and edit-mode context menu on the club map. */
 import {
+  Activity,
   BrushCleaning,
   CircleStop,
   Clock,
@@ -39,6 +40,7 @@ import {
 import type { PcAction } from '../../shared/api';
 import { LANDMARK_TITLES, type MapLabel, type MapLandmark, type MapZoneBox } from '../../shared/mapLayout';
 import { fmtAgo, fmtDateTime, fmtTime, occupancyText, RESULT_LABEL, scheduleLabel } from '../format';
+import { useI18n } from '../i18n';
 import { StatusBadge } from '../ui';
 import { clamp, type EditItemRef } from './mapEdit';
 import { TONE_COLOR, TONE_LABEL, type MapTone } from './mapStatus';
@@ -216,6 +218,7 @@ interface MenuProps {
   onClose: () => void;
   onAction: (a: PcAction, ids: number[]) => void;
   onLogs: (id: number) => void;
+  onDiag: (id: number) => void;
   onEdit: (pc: PcRecord) => void;
   onSteam: (ids: number[]) => void;
   onUpdateAgent: (ids: number[]) => void;
@@ -225,6 +228,7 @@ interface MenuProps {
 }
 
 export function PcMenu(p: MenuProps) {
+  const { t } = useI18n();
   const run = (fn: () => void) => () => {
     p.onClose();
     fn();
@@ -264,26 +268,27 @@ export function PcMenu(p: MenuProps) {
         <span className="mt-dot" style={{ background: TONE_COLOR[p.tone] }} />
         <span className="dim">{TONE_LABEL[p.tone]}</span>
       </div>
-      {item('Обслуговування зараз', <Play size={15} />, act('test'), { disabled: !online || busy, title: busy ? 'Уже виконується завдання' : offlineHint })}
-      {item('Очистити логіни зараз', <BrushCleaning size={15} />, act('clean-logins'), { disabled: !online || busy, title: offlineHint })}
-      {item('Відкрити живий лог', <ScrollText size={15} />, run(() => p.onLogs(pc.id)))}
+      {item(t('action.test'), <Play size={15} />, act('test'), { disabled: !online || busy, title: busy ? 'Уже виконується завдання' : offlineHint })}
+      {item(t('action.cleanLogins'), <BrushCleaning size={15} />, act('clean-logins'), { disabled: !online || busy, title: offlineHint })}
+      {item(t('pcs.quickDiag'), <Activity size={15} />, run(() => p.onDiag(pc.id)), { disabled: !online, title: offlineHint })}
+      {item(t('pcs.liveLog'), <ScrollText size={15} />, run(() => p.onLogs(pc.id)))}
       <hr />
-      {item('Увімкнути (WoL)', <Zap size={15} />, act('wake'))}
+      {item(t('action.wake'), <Zap size={15} />, act('wake'))}
       <div className="mm-pair">
-        {item('Сон', <Moon size={15} />, act('sleep'), { disabled: !online, title: offlineHint })}
-        {item('Гібернація', <Snowflake size={15} />, act('hibernate'), { disabled: !online, title: offlineHint })}
+        {item(t('action.sleep'), <Moon size={15} />, act('sleep'), { disabled: !online, title: offlineHint })}
+        {item(t('action.hibernate'), <Snowflake size={15} />, act('hibernate'), { disabled: !online, title: offlineHint })}
       </div>
       <div className="mm-pair">
-        {item('Перезавантажити', <RotateCcw size={15} />, act('restart'), { disabled: !online, danger: true, title: offlineHint })}
-        {item('Вимкнути', <PowerOff size={15} />, act('shutdown'), { disabled: !online, danger: true, title: offlineHint })}
+        {item(t('action.restart'), <RotateCcw size={15} />, act('restart'), { disabled: !online, danger: true, title: offlineHint })}
+        {item(t('action.shutdown'), <PowerOff size={15} />, act('shutdown'), { disabled: !online, danger: true, title: offlineHint })}
       </div>
       <hr />
-      {item('Вхід SteamCMD', <KeyRound size={15} />, run(() => p.onSteam([pc.id])), { disabled: !online, title: offlineHint })}
-      {item('Синхронізувати час', <Clock size={15} />, act('sync-time'), { disabled: !online, title: offlineHint })}
-      {busy && item('Скасувати завдання', <CircleStop size={15} />, act('cancel'))}
-      {st?.pendingPower && item('Скасувати вимкнення', <TimerOff size={15} />, act('cancel-power'))}
-      {online && p.outdated && item('Оновити агент…', <PackageOpen size={15} />, run(() => p.onUpdateAgent([pc.id])))}
-      {item('Редагувати ПК', <Pencil size={15} />, run(() => p.onEdit(pc)))}
+      {item(t('pcs.steamLogin'), <KeyRound size={15} />, run(() => p.onSteam([pc.id])), { disabled: !online, title: offlineHint })}
+      {item(t('action.syncTime'), <Clock size={15} />, act('sync-time'), { disabled: !online, title: offlineHint })}
+      {busy && item(t('action.cancel'), <CircleStop size={15} />, act('cancel'))}
+      {st?.pendingPower && item(t('action.cancelPower'), <TimerOff size={15} />, act('cancel-power'))}
+      {online && p.outdated && item(t('pcs.updateAgentAction'), <PackageOpen size={15} />, run(() => p.onUpdateAgent([pc.id])))}
+      {item(t('pcs.editPc'), <Pencil size={15} />, run(() => p.onEdit(pc)))}
       <hr />
       {item(p.selected ? 'Прибрати з вибору' : 'Додати до вибору', <ListChecks size={15} />, run(() => p.onToggleSelect(pc.id)))}
     </>

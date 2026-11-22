@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';

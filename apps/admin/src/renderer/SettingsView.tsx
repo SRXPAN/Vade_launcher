@@ -1,8 +1,25 @@
-import { Copy, Cpu, Eye, EyeOff, FolderOpen, HardDrive, KeyRound, Monitor, Network, Package, RefreshCw, TriangleAlert } from 'lucide-react';
-import { useState } from 'react';
-import type { AppSettings, HealthThresholds, ThemeMode } from '@vade/protocol';
-import type { AppInfo } from '../shared/api';
+import {
+  Copy,
+  Cpu,
+  Download,
+  Eye,
+  EyeOff,
+  FileArchive,
+  FolderOpen,
+  HardDrive,
+  KeyRound,
+  Lock,
+  Monitor,
+  Network,
+  Package,
+  RefreshCw,
+  TriangleAlert,
+} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import type { AppLanguage, AppSettings, HealthThresholds, ThemeMode } from '@vade/protocol';
+import type { AppInfo, AppUpdateState } from '../shared/api';
 import { api, errorText } from './api';
+import { LANGUAGE_LABELS, useI18n } from './i18n';
 import { SaveBar } from './SaveBar';
 import { ConfirmDialog, Option, Segmented, useToast } from './ui';
 import { useDraft } from './useDraft';
@@ -14,12 +31,27 @@ interface Props {
 }
 
 export function SettingsView({ settings, onSaved, info }: Props) {
+  const { t } = useI18n();
   const toast = useToast();
   const { draft, update, dirty, reset, save, error, saving } = useDraft(settings, onSaved);
   const [showKey, setShowKey] = useState(false);
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportingZip, setExportingZip] = useState(false);
+  const [exportingDiag, setExportingDiag] = useState(false);
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [pinBusy, setPinBusy] = useState(false);
+  const [appUpd, setAppUpd] = useState<AppUpdateState | null>(null);
+  const [checkingUpd, setCheckingUpd] = useState(false);
   const n = draft.network;
+  const hasPin = !!(settings.security.pinHash ?? '').trim();
+
+  useEffect(() => {
+    void api.getAppUpdateStatus().then(setAppUpd);
+    return api.onAppUpdateStatus(setAppUpd);
+  }, []);
 
   const regen = async () => {
     try {
@@ -34,25 +66,90 @@ export function SettingsView({ settings, onSaved, info }: Props) {
     setExporting(true);
     try {
       const r = await api.exportAgentPackage();
-      if (r.ok) toast('ok', `Пакет агента збережено:\n${r.path}`);
+      if (r.ok) toast('ok', t('settings.pkgSaved', { path: r.path ?? '' }));
       else if (r.error) toast('error', r.error);
     } finally {
       setExporting(false);
     }
   };
 
+  const exportUsbZip = async () => {
+    setExportingZip(true);
+    try {
+      const r = await api.exportAgentZip();
+      if (r.ok) toast('ok', t('settings.zipSaved', { path: r.path ?? '' }));
+      else if (r.error) toast('error', r.error);
+    } catch (e) {
+      toast('error', errorText(e));
+    } finally {
+      setExportingZip(false);
+    }
+  };
+
+  const savePin = async (disable = false) => {
+    if (!disable) {
+      if (newPin.trim().length < 4) {
+        toast('error', t('settings.pinMinLen'));
+        return;
+      }
+      if (newPin !== confirmPin) {
+        toast('error', t('settings.pinMismatch'));
+        return;
+      }
+    }
+    setPinBusy(true);
+    try {
+      const res = await api.setPin(hasPin ? currentPin : undefined, disable ? null : newPin);
+      if (!res.ok) {
+        toast('error', res.error ?? t('settings.pinError'));
+        return;
+      }
+      if (res.settings) onSaved(res.settings);
+      setCurrentPin('');
+      setNewPin('');
+      setConfirmPin('');
+      toast('ok', disable ? t('settings.pinStatusOff') : t('settings.pinStatusOn'));
+    } catch (e) {
+      toast('error', errorText(e));
+    } finally {
+      setPinBusy(false);
+    }
+  };
+
+  const checkUpdates = async () => {
+    setCheckingUpd(true);
+    try {
+      setAppUpd(await api.checkAppUpdates());
+    } finally {
+      setCheckingUpd(false);
+    }
+  };
+
+  const exportDiag = async () => {
+    setExportingDiag(true);
+    try {
+      const r = await api.exportDiagnosticsZip();
+      if (r.ok) toast('ok', t('settings.diagSaved', { path: r.path ?? '' }));
+      else if (r.error) toast('error', r.error);
+    } catch (e) {
+      toast('error', errorText(e));
+    } finally {
+      setExportingDiag(false);
+    }
+  };
+
   return (
     <div className="page">
       <div className="page-title">
-        <h1>Налаштування</h1>
-        {info && <span className="dim">версія {info.version}</span>}
+        <h1>{t('settings.title')}</h1>
+        {info && <span className="dim">{t('settings.version', { version: info.version })}</span>}
       </div>
       {error && <div className="errors">{error}</div>}
       <div className="cols">
         <div>
           <section className="section">
             <h2>
-              <Network size={17} /> Мережа клубу
+              <Network size={17} /> {t('settings.network')}
             </h2>
             <div className="hint">Локальна мережа, без хмари. IP цього ПК: {info?.localIps.join(', ') || '—'}</div>
             <div className="form-grid">
@@ -99,7 +196,7 @@ export function SettingsView({ settings, onSaved, info }: Props) {
 
           <section className="section">
             <h2>
-              <HardDrive size={17} /> Вільне місце на дисках
+              <HardDrive size={17} /> {t('settings.disks')}
             </h2>
             <div className="hint">Агенти раз на хвилину надсилають вільне місце всіх локальних дисків; картка ПК підсвічує диск за порогами.</div>
             <div className="form-grid">
@@ -120,7 +217,7 @@ export function SettingsView({ settings, onSaved, info }: Props) {
 
           <section className="section">
             <h2>
-              <Cpu size={17} /> Здоров'я ПК (пороги заліза)
+              <Cpu size={17} /> {t('settings.hardware')}
             </h2>
             <div className="hint">
               Контроль RAM, герцовки монітора, температури GPU та зносу SSD. Значення 0 вимикає перевірку порогу.
@@ -176,7 +273,7 @@ export function SettingsView({ settings, onSaved, info }: Props) {
                           })
                         }
                       >
-                        Прибрати
+                        {t('common.remove')}
                       </button>
                     </div>
                     <div className="inline-fields">
@@ -223,7 +320,7 @@ export function SettingsView({ settings, onSaved, info }: Props) {
 
           <section className="section">
             <h2>
-              <KeyRound size={17} /> Ключ клубу
+              <KeyRound size={17} /> {t('settings.clubKey')}
             </h2>
             <div className="hint">
               Спільний секрет адмінки та агентів. Сам ключ мережею не передається (HMAC challenge-response), ним же шифрується пароль Steam.
@@ -263,59 +360,112 @@ export function SettingsView({ settings, onSaved, info }: Props) {
         <div>
           <section className="section">
             <h2>
-              <Package size={17} /> Агент для ігрових ПК
+              <Package size={17} /> {t('settings.agentSection')}
             </h2>
             <div className="hint">Легкий Windows-сервіс (SYSTEM), що виконує обслуговування, оновлення і команди живлення.</div>
             <ol className="muted" style={{ margin: '4px 0 12px', paddingLeft: 20, lineHeight: 1.7 }}>
-              <li>«Експортувати пакет» → оберіть флешку або мережеву папку.</li>
-              <li>На ігровому ПК запустіть install.cmd (права адміністратора).</li>
+              <li>Збережіть ZIP-флешку або експортуйте папку з ключем клубу та IP адміна.</li>
+              <li>На ігровому ПК запустіть install.cmd (права адміністратора) — без ручного вводу налаштувань.</li>
               <li>ПК стане Online → виконайте «Вхід SteamCMD» для нього.</li>
             </ol>
-            <button className="btn primary" disabled={exporting || !info?.agentPackageAvailable} onClick={() => void exportPkg()}>
-              <Package size={15} /> Експортувати пакет агента
-            </button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn primary" disabled={exportingZip || !info?.agentPackageAvailable} onClick={() => void exportUsbZip()}>
+                <FileArchive size={15} /> {t('settings.exportZip')}
+              </button>
+              <button className="btn" disabled={exporting || !info?.agentPackageAvailable} onClick={() => void exportPkg()}>
+                <Package size={15} /> {t('settings.exportDir')}
+              </button>
+            </div>
             {info && !info.agentPackageAvailable && <div className="hint" style={{ marginTop: 8 }}>Пакет агента не зібрано. Виконайте: npm run build:agent</div>}
             <div className="hint" style={{ marginTop: 10 }}>
               Інсталятор налаштовує живлення (гібернація, таймери пробудження, без пароля після сну — для SENET), брандмауер, Wake-on-LAN на мережевій
-              карті та видаляє старе завдання «Club Night» від .bat.
+              карті та виключення Windows Defender.
             </div>
           </section>
 
           <section className="section">
             <h2>
-              <Monitor size={17} /> Застосунок
+              <Lock size={17} /> {t('settings.pinSection')}
+            </h2>
+            <div className="hint">{t('settings.pinHint')}</div>
+            <div style={{ marginBottom: 10 }}>
+              <span className={`badge ${hasPin ? 'st-online' : 'st-offline'}`}>
+                {hasPin ? t('settings.pinStatusOn') : t('settings.pinStatusOff')}
+              </span>
+            </div>
+            <div className="form-grid">
+              {hasPin && (
+                <div className="field full">
+                  <label>{t('settings.pinCurrent')}</label>
+                  <input className="input mono" type="password" value={currentPin} onChange={(e) => setCurrentPin(e.target.value)} />
+                </div>
+              )}
+              <div className="field">
+                <label>{t('settings.pinNew')}</label>
+                <input className="input mono" type="password" value={newPin} onChange={(e) => setNewPin(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>{t('settings.pinConfirm')}</label>
+                <input className="input mono" type="password" value={confirmPin} onChange={(e) => setConfirmPin(e.target.value)} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button className="btn small primary" disabled={pinBusy || !newPin.trim()} onClick={() => void savePin(false)}>
+                {t('settings.pinSave')}
+              </button>
+              {hasPin && (
+                <button className="btn small danger" disabled={pinBusy || !currentPin.trim()} onClick={() => void savePin(true)}>
+                  {t('settings.pinDisable')}
+                </button>
+              )}
+            </div>
+          </section>
+
+          <section className="section">
+            <h2>
+              <Monitor size={17} /> {t('settings.appSection')}
             </h2>
             <div className="opt">
               <div className="opt-text">
-                <div className="opt-title">Тема оформлення</div>
-                <div className="opt-desc">Синхронно змінює інтерфейс усіх вкладок, діалогів і карти клубу.</div>
+                <div className="opt-title">{t('settings.themeLabel')}</div>
+                <div className="opt-desc">{t('settings.themeDesc')}</div>
               </div>
               <Segmented<ThemeMode>
                 value={draft.ui.theme}
                 onChange={(v) => update((d) => void (d.ui.theme = v))}
                 options={[
-                  { value: 'light', label: 'Світла' },
-                  { value: 'dark', label: 'Темна' },
-                  { value: 'system', label: 'Як у системі' },
+                  { value: 'light', label: t('settings.themeLight') },
+                  { value: 'dark', label: t('settings.themeDark') },
+                  { value: 'system', label: t('settings.themeSystem') },
                 ]}
               />
             </div>
+            <div className="opt">
+              <div className="opt-text">
+                <div className="opt-title">{t('settings.langLabel')}</div>
+              </div>
+              <Segmented<AppLanguage>
+                value={draft.ui.language}
+                onChange={(v) => update((d) => void (d.ui.language = v))}
+                options={(['uk', 'pl', 'en'] as AppLanguage[]).map((l) => ({ value: l, label: LANGUAGE_LABELS[l] }))}
+              />
+            </div>
             <Option
-              title="Запускати разом з Windows"
-              desc="Потрібно для нічного Wake-on-LAN: адмінка має працювати на головному ПК."
+              title={t('settings.autostartTitle')}
+              desc={t('settings.autostartDesc')}
               on={draft.ui.autostart}
               onChange={(v) => update((d) => void (d.ui.autostart = v))}
             />
             <Option
-              title="Закриття вікна згортає в трей"
-              desc="Моніторинг і Wake-on-LAN продовжують працювати у фоні."
+              title={t('settings.trayTitle')}
+              desc={t('settings.trayDesc')}
               on={draft.ui.closeToTray}
               onChange={(v) => update((d) => void (d.ui.closeToTray = v))}
             />
             <div className="opt">
               <div className="opt-text">
-                <div className="opt-title">Зберігати історію запусків, днів</div>
-                <div className="opt-desc">Старіші записи автоматично очищуються з history.json.</div>
+                <div className="opt-title">{t('settings.historyDaysTitle')}</div>
+                <div className="opt-desc">{t('settings.historyDaysDesc')}</div>
               </div>
               <input
                 className="input"
@@ -327,9 +477,31 @@ export function SettingsView({ settings, onSaved, info }: Props) {
                 onChange={(e) => update((d) => void (d.ui.historyRetentionDays = Number(e.target.value)))}
               />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+            <div className="opt">
+              <div className="opt-text">
+                <div className="opt-title">{t('settings.updatesLabel')}</div>
+                <div className="opt-desc">
+                  {appUpd?.message || t('settings.currentVersion', { version: info?.version ?? '—' })}
+                  {appUpd?.phase === 'downloading' && appUpd.percent != null ? ` (${appUpd.percent}%)` : ''}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn small" disabled={checkingUpd} onClick={() => void checkUpdates()}>
+                  <RefreshCw size={13} className={checkingUpd ? 'spin' : undefined} /> {t('settings.checkUpdates')}
+                </button>
+                {appUpd?.phase === 'downloaded' && appUpd.availableVersion && (
+                  <button className="btn small primary" onClick={() => void api.installAppUpdate()}>
+                    <Download size={13} /> {t('settings.installUpdate', { version: appUpd.availableVersion })}
+                  </button>
+                )}
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+              <button className="btn small" disabled={exportingDiag} onClick={() => void exportDiag()}>
+                <FileArchive size={14} /> {t('settings.collectDiag')}
+              </button>
               <button className="btn small" onClick={() => void api.openDataDir()}>
-                <FolderOpen size={14} /> Папка даних
+                <FolderOpen size={14} /> {t('settings.dataDir')}
               </button>
               <span className="dim mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {info?.dataDir}

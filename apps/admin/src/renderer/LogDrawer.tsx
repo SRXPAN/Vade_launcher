@@ -1,10 +1,9 @@
-import { Ban, CircleCheck, CircleDashed, CircleStop, CircleX, Copy, LoaderCircle, Lock, Play, X } from 'lucide-react';
+import { Activity, Ban, CircleCheck, CircleDashed, CircleStop, CircleX, Copy, FileArchive, LoaderCircle, Lock, Play, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 import {
   deriveDisplayStatus,
   diskLevel,
   formatGb,
-  OCCUPANCY_TITLES,
   STEP_TITLES,
   type AppSettings,
   type PcRecord,
@@ -14,6 +13,7 @@ import {
 import type { PcAction, UiLogLine } from '../shared/api';
 import { api, errorText } from './api';
 import { APP_STATUS, fmtDateTime, occupancyOf, occupancyText, RESULT_LABEL, STEP_ICON_CLASS } from './format';
+import { useI18n } from './i18n';
 import { ConfirmDialog, StatusBadge, Switch, useToast } from './ui';
 
 const STEP_ICON: Record<StepStatus, ReactElement> = {
@@ -31,19 +31,22 @@ interface Props {
   onSettingsSaved: (s: AppSettings) => void;
   onClose: () => void;
   onAction: (action: PcAction, ids: number[]) => void;
+  onDiag: (id: number) => void;
 }
 
-function timeOf(ts: string): string {
-  return new Date(ts).toLocaleTimeString('uk-UA');
+function timeOf(ts: string, locale = 'uk-UA'): string {
+  return new Date(ts).toLocaleTimeString(locale);
 }
 
-export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction }: Props) {
+export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction, onDiag }: Props) {
+  const { t, locale } = useI18n();
   const toast = useToast();
   const [lines, setLines] = useState<UiLogLine[]>([]);
   const [showSteam, setShowSteam] = useState(true);
   const [follow, setFollow] = useState(true);
   const [confirmSenet, setConfirmSenet] = useState(false);
   const [ignoringApp, setIgnoringApp] = useState<number | null>(null);
+  const [exportingDiag, setExportingDiag] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -110,27 +113,46 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
   };
 
   const copy = async () => {
-    const text = shown.map((l) => `[${new Date(l.ts).toLocaleString('uk-UA')}] ${l.level.toUpperCase()} ${l.msg}`).join('\n');
+    const text = shown.map((l) => `[${new Date(l.ts).toLocaleString(locale)}] ${l.level.toUpperCase()} ${l.msg}`).join('\n');
     await navigator.clipboard.writeText(text);
-    toast('ok', `Скопійовано ${shown.length} рядків`);
+    toast('ok', t('log.copied', { count: shown.length }));
+  };
+
+  const exportZip = async () => {
+    setExportingDiag(true);
+    try {
+      const r = await api.exportDiagnosticsZip(pc.id);
+      if (r.ok) toast('ok', `ZIP: ${r.path}`);
+      else if (r.error) toast('error', r.error);
+    } catch (e) {
+      toast('error', errorText(e));
+    } finally {
+      setExportingDiag(false);
+    }
   };
 
   return (
     <aside className="drawer">
       <div className="drawer-head">
-        <h2>ПК №{pc.id}</h2>
+        <h2>{t('log.title', { id: pc.id })}</h2>
         <StatusBadge status={deriveDisplayStatus(rt)} />
         <span className="host" title={rt?.info?.hostname ?? pc.ip}>
           {rt?.info?.hostname ?? pc.ip}
         </span>
         <span className="spacer" />
+        <button className="btn small" disabled={!online} onClick={() => onDiag(pc.id)} title={t('log.quickDiag')}>
+          <Activity size={14} /> {t('log.quickDiag')}
+        </button>
+        <button className="btn small" disabled={exportingDiag} onClick={() => void exportZip()} title={t('log.exportZip')}>
+          {exportingDiag ? <LoaderCircle size={14} className="spin" /> : <FileArchive size={14} />} ZIP
+        </button>
         <button className="btn small" disabled={!online || !!job} onClick={() => onAction('test', [pc.id])}>
-          <Play size={14} /> Обслуговування
+          <Play size={14} /> {t('log.maintenance')}
         </button>
         <button className="btn small" disabled={!job} onClick={() => onAction('cancel', [pc.id])}>
-          <CircleStop size={14} /> Скасувати
+          <CircleStop size={14} /> {t('common.cancel')}
         </button>
-        <button className="icon-btn" onClick={onClose} aria-label="Закрити">
+        <button className="icon-btn" onClick={onClose} aria-label={t('common.close')}>
           <X size={16} />
         </button>
       </div>
@@ -138,7 +160,7 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
         {occ && (
           <div className="occ-box">
             <div className="row">
-              <span className={`occ occ-${occ}`}>{OCCUPANCY_TITLES[occ]}</span>
+              <span className={`occ occ-${occ}`}>{t(`occ.${occ}`)}</span>
               <span>{occupancyText(rt)}</span>
             </div>
             {presence && (
@@ -257,24 +279,24 @@ export function LogDrawer({ pc, rt, settings, onSettingsSaved, onClose, onAction
           </div>
         )}
         <div className="log-tools">
-          <strong>Лог</strong>
+          <strong>{t('log.logTitle')}</strong>
           <span className="dim">{shown.length}</span>
           <span className="spacer" />
           <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-            <Switch on={showSteam} onChange={setShowSteam} label="Вивід SteamCMD" /> SteamCMD
+            <Switch on={showSteam} onChange={setShowSteam} label={t('log.steamcmd')} /> {t('log.steamcmd')}
           </label>
           <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-            <Switch on={follow} onChange={setFollow} label="Автопрокрутка" /> Автопрокрутка
+            <Switch on={follow} onChange={setFollow} label={t('log.follow')} /> {t('log.follow')}
           </label>
-          <button className="icon-btn" title="Копіювати лог" onClick={() => void copy()}>
+          <button className="icon-btn" title={t('log.copy')} onClick={() => void copy()}>
             <Copy size={14} />
           </button>
         </div>
         <div className="log" ref={logRef}>
-          {shown.length === 0 && <div className="dim">Поки що порожньо. Лог з'явиться, коли агент підключиться.</div>}
+          {shown.length === 0 && <div className="dim">{t('log.empty')}</div>}
           {shown.map((l, i) => (
             <div key={i} className={l.admin ? 'l-admin' : `l-${l.level}`}>
-              <span className="ts">{timeOf(l.ts)}</span>
+              <span className="ts">{timeOf(l.ts, locale)}</span>
               {l.admin ? '[адмін] ' : ''}
               {l.msg}
             </div>

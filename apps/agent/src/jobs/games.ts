@@ -70,7 +70,7 @@ async function killSteam(sys: Sys): Promise<void> {
 }
 
 export async function uninstallSteamGame(
-  deps: { sys: Sys; log: Logger; steamPath: string },
+  deps: { sys: Sys; log: Logger; steamPath: string; killSteam?: () => Promise<void> },
   args: { appId: number; libraryPath: string },
 ): Promise<GamesUninstallResult> {
   const { sys, log, steamPath } = deps;
@@ -115,7 +115,7 @@ export async function uninstallSteamGame(
   }
 
   log.warn(`Видалення гри ${appId} (${gameName}) з ${matchedLib} (${paths.gameDir ?? 'лише маніфест'})…`);
-  await killSteam(sys);
+  await (deps.killSteam ? deps.killSteam() : killSteam(sys));
 
   let removedFiles = 0;
   let failedFiles = 0;

@@ -18,18 +18,23 @@ import {
   RotateCcw,
   Search,
   Snowflake,
+  Terminal,
   User,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { deriveDisplayStatus, ERR_OCCUPIED, type AppSettings, type PcRecord, type PcRuntime } from '@vade/protocol';
 import type { AgentUpdateStatus, PcAction, QueueRunStatus } from '../shared/api';
 import { api, errorText } from './api';
+import { DeployDialog } from './DeployDialog';
+import { DiagDialog } from './DiagDialog';
 import { ACTIONS, nextFreeId, occupancyOf, occupancyText, QUEUE_STATE_LABEL, scheduleLabel, zonesOf } from './format';
-import { AgentUpdateDialog, QueueDialog, RunBar } from './RunDialogs';
+import { useI18n, type I18nKey } from './i18n';
 import { LogDrawer } from './LogDrawer';
 import { ClubMap, type SelectMode } from './map/ClubMap';
 import { PcCard } from './PcCard';
 import { PcEditor } from './PcEditor';
+import { PinPromptModal } from './PinPromptModal';
+import { AgentUpdateDialog, QueueDialog, RunBar } from './RunDialogs';
 import { ScanDialog } from './ScanDialog';
 import { SteamLoginDialog } from './SteamLoginDialog';
 import { CheckBox, ConfirmDialog, Menu, Modal, Segmented, useToast } from './ui';
@@ -44,6 +49,21 @@ interface Props {
 
 /** Actions that close Steam / games / browsers: they need the "player on the PC" warning. */
 const KICKS_PLAYER: PcAction[] = ['test', 'run', 'clean-logins'];
+const POWER_DANGER: PcAction[] = ['sleep', 'hibernate', 'shutdown', 'restart'];
+
+const ACTION_KEY: Record<PcAction, I18nKey> = {
+  wake: 'action.wake',
+  test: 'action.test',
+  run: 'action.run',
+  cancel: 'action.cancel',
+  sleep: 'action.sleep',
+  hibernate: 'action.hibernate',
+  shutdown: 'action.shutdown',
+  restart: 'action.restart',
+  'cancel-power': 'action.cancelPower',
+  'clean-logins': 'action.cleanLogins',
+  'sync-time': 'action.syncTime',
+};
 
 type ViewMode = 'map' | 'cards';
 const VIEW_KEY = 'vade.pcsView';
@@ -57,6 +77,7 @@ function loadViewMode(): ViewMode {
 }
 
 export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Props) {
+  const { t } = useI18n();
   const toast = useToast();
   const [view, setView] = useState<ViewMode>(loadViewMode);
   const [zone, setZone] = useState('all');
@@ -66,8 +87,10 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
   const [scanOpen, setScanOpen] = useState(false);
   const [steamFor, setSteamFor] = useState<number[] | null>(null);
   const [logPc, setLogPc] = useState<number | null>(null);
+  const [diagPc, setDiagPc] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<{ action: PcAction; ids: number[] } | null>(null);
   const [occupiedPrompt, setOccupiedPrompt] = useState<{ action: PcAction; ids: number[]; busyIds: number[] } | null>(null);
+  const [pinForAction, setPinForAction] = useState<{ action: PcAction; ids: number[]; force: boolean } | null>(null);
   const [busy, setBusy] = useState<PcAction | null>(null);
   const [queueStatus, setQueueStatus] = useState<QueueRunStatus | null>(null);
   const [updateStatus, setUpdateStatus] = useState<AgentUpdateStatus | null>(null);
@@ -75,6 +98,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
   const [latestAgent, setLatestAgent] = useState<string | null>(null);
   const [updateFor, setUpdateFor] = useState<number[] | null>(null);
   const [queueFor, setQueueFor] = useState<number[] | null>(null);
+  const [deployFor, setDeployFor] = useState<number[] | null>(null);
   // Callbacks read runtimes through a ref so memoised cards are not re-rendered on every status tick.
   const rtRef = useRef(runtimes);
   rtRef.current = runtimes;
@@ -205,11 +229,25 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
 
   const openEditor = useCallback((pc: PcRecord) => setEditor({ pc, originalId: pc.id }), []);
   const logPcRecord = logPc != null ? pcs.find((p) => p.id === logPc) : undefined;
+  const diagPcRecord = diagPc != null ? pcs.find((p) => p.id === diagPc) : undefined;
+  const hasPin = !!(settings.security.pinHash ?? '').trim();
+
+  const runWithOptionalPin = (action: PcAction, ids: number[], force: boolean) => {
+    const needsPin =
+      hasPin &&
+      ((POWER_DANGER.includes(action) && occupiedAmong(ids).length > 0 && (ids.length > 1 || action === 'shutdown' || action === 'restart')) ||
+        (force && occupiedAmong(ids).length > 0 && KICKS_PLAYER.includes(action)));
+    if (needsPin) {
+      setPinForAction({ action, ids, force });
+      return;
+    }
+    void execute(action, ids, force);
+  };
 
   const bulk = (action: PcAction, icon: ReactNode) => (
     <button className={`btn small ${ACTIONS[action].danger ? 'danger' : ''}`} disabled={!selIds.length || busy != null} onClick={() => request(action, selIds)}>
       {busy === action ? <LoaderCircle size={14} className="spin" /> : icon}
-      {ACTIONS[action].label}
+      {t(ACTION_KEY[action])}
     </button>
   );
 
@@ -225,7 +263,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                 value: 'map',
                 label: (
                   <span className="seg-icon">
-                    <MapIcon size={14} /> Карта
+                    <MapIcon size={14} /> {t('pcs.viewMap')}
                   </span>
                 ),
               },
@@ -233,7 +271,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                 value: 'cards',
                 label: (
                   <span className="seg-icon">
-                    <LayoutGrid size={14} /> Картки
+                    <LayoutGrid size={14} /> {t('pcs.viewCards')}
                   </span>
                 ),
               },
@@ -242,33 +280,33 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           <Segmented
             value={zone}
             onChange={setZone}
-            options={[{ value: 'all', label: `Усі (${pcs.length})` }, ...zones.map((z) => ({ value: z, label: `${z} (${pcs.filter((p) => p.zone === z).length})` }))]}
+            options={[{ value: 'all', label: `${t('pcs.all')} (${pcs.length})` }, ...zones.map((z) => ({ value: z, label: `${z} (${pcs.filter((p) => p.zone === z).length})` }))]}
           />
           <div className="search">
             <Search size={15} />
-            <input className="input" placeholder="Номер, IP, MAC, ім'я…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <input className="input" placeholder={t('pcs.searchPlaceholder')} value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="spacer" />
           <button className="btn" onClick={() => setScanOpen(true)}>
-            <Radar size={16} /> Сканувати мережу
+            <Radar size={16} /> {t('pcs.scanNetwork')}
           </button>
           <button
             className="btn primary"
             onClick={() => setEditor({ pc: { id: nextFreeId(pcs), ip: '', mac: '', zone: zone !== 'all' ? zone : 'Regular' }, originalId: null })}
           >
-            <Plus size={16} /> Додати ПК
+            <Plus size={16} /> {t('pcs.addPc')}
           </button>
         </div>
         <div className="toolbar-row selbar">
           <button className="select-all" onClick={() => (allVisible ? setSelected(new Set()) : setSelected(new Set([...selected, ...visible.map((p) => p.id)])))}>
             <CheckBox state={allVisible ? 'on' : someVisible ? 'partial' : 'off'} />
-            {selIds.length ? `Вибрано ${selIds.length}` : 'Вибрати всі'}
+            {selIds.length ? t('pcs.selectedCount', { count: selIds.length }) : t('pcs.selectAll')}
           </button>
           <Menu
             down
             trigger={(open) => (
               <button className="btn small ghost" onClick={open}>
-                Вибрати… <ChevronDown size={14} />
+                {t('pcs.selectMenu')} <ChevronDown size={14} />
               </button>
             )}
           >
@@ -285,16 +323,16 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
               );
               return (
                 <>
-                  {pick('Усі ПК', () => true)}
+                  {pick(t('pcs.allPcs'), () => true)}
                   {zones.map((z) => (
-                    <span key={z}>{pick(`Зона ${z}`, (p) => p.zone === z)}</span>
+                    <span key={z}>{pick(t('pcs.zonePrefix', { zone: z }), (p) => p.zone === z)}</span>
                   ))}
                   <hr />
-                  {pick('Вільні', (p) => occupancyOf(runtimes[p.id]) === 'free')}
-                  {pick('Зайняті гравцями', (p) => occupancyOf(runtimes[p.id]) === 'occupied')}
+                  {pick(t('pcs.freePcs'), (p) => occupancyOf(runtimes[p.id]) === 'free')}
+                  {pick(t('pcs.occupiedPcs'), (p) => occupancyOf(runtimes[p.id]) === 'occupied')}
                   {pick('Online', (p) => runtimes[p.id]?.link === 'online')}
-                  {pick('Offline і Sleeping', (p) => ['offline', 'sleeping'].includes(deriveDisplayStatus(runtimes[p.id])))}
-                  {pick('З помилками', (p) => deriveDisplayStatus(runtimes[p.id]) === 'error')}
+                  {pick(t('pcs.offlineSleeping'), (p) => ['offline', 'sleeping'].includes(deriveDisplayStatus(runtimes[p.id])))}
+                  {pick(t('pcs.withErrors'), (p) => deriveDisplayStatus(runtimes[p.id]) === 'error')}
                   <hr />
                   <button
                     onClick={() => {
@@ -302,7 +340,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                       close();
                     }}
                   >
-                    Зняти виділення
+                    {t('pcs.clearSelection')}
                   </button>
                 </>
               );
@@ -319,13 +357,13 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
             {bulk('cancel', <CircleStop size={14} />)}
             {bulk('clean-logins', <LogOut size={14} />)}
             <button className="btn small" disabled={!selIds.length} onClick={() => setSteamFor(selIds)}>
-              <KeyRound size={14} /> Вхід SteamCMD
+              <KeyRound size={14} /> {t('pcs.steamLogin')}
             </button>
             <Menu
               down
               trigger={(open) => (
                 <button className="btn small" disabled={!selIds.length} onClick={open}>
-                  <Ellipsis size={14} /> Ще
+                  <Ellipsis size={14} /> {t('pcs.more')}
                 </button>
               )}
             >
@@ -337,7 +375,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                       setQueueFor(selIds);
                     }}
                   >
-                    <Layers size={15} /> Обслуговування чергою…
+                    <Layers size={15} /> {t('pcs.queueAction')}
                   </button>
                   <button
                     onClick={() => {
@@ -345,7 +383,16 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                       setUpdateFor(selIds);
                     }}
                   >
-                    <PackageOpen size={15} /> Оновити агент…
+                    <PackageOpen size={15} /> {t('pcs.updateAgentAction')}
+                  </button>
+                  <hr />
+                  <button
+                    onClick={() => {
+                      close();
+                      setDeployFor(selIds);
+                    }}
+                  >
+                    <Terminal size={15} /> {t('pcs.deployAction')}
                   </button>
                 </>
               )}
@@ -386,13 +433,14 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           onSelect={selectOnMap}
           onAction={request}
           onLogs={setLogPc}
+          onDiag={setDiagPc}
           onEdit={openEditor}
           onAddPc={addPcAt}
           onSteamLogin={setSteamFor}
           onUpdateAgent={openUpdate}
         />
       ) : visible.length === 0 ? (
-        <div className="empty">{pcs.length ? 'Нічого не знайдено.' : 'Список ПК порожній. Додайте ПК вручну або проскануйте мережу.'}</div>
+        <div className="empty">{pcs.length ? t('pcs.empty') : t('pcs.emptyList')}</div>
       ) : (
         groups.map((g) => (
           <section key={g.zone} className="zone-section">
@@ -417,6 +465,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                   onToggle={toggle}
                   onAction={request}
                   onLogs={setLogPc}
+                  onDiag={setDiagPc}
                   onEdit={openEditor}
                   onUpdateAgent={openUpdate}
                 />
@@ -435,6 +484,19 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           onSettingsSaved={onSettingsSaved}
           onClose={() => setLogPc(null)}
           onAction={request}
+          onDiag={setDiagPc}
+        />
+      )}
+      {diagPcRecord && <DiagDialog pc={diagPcRecord} rt={runtimes[diagPcRecord.id]} onClose={() => setDiagPc(null)} />}
+      {deployFor && <DeployDialog pcIds={deployFor} runtimes={runtimes} settings={settings} onClose={() => setDeployFor(null)} />}
+      {pinForAction && (
+        <PinPromptModal
+          onVerified={() => {
+            const p = pinForAction;
+            setPinForAction(null);
+            void execute(p.action, p.ids, p.force);
+          }}
+          onClose={() => setPinForAction(null)}
         />
       )}
       {occupiedPrompt && (
@@ -467,7 +529,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                   className="btn danger solid"
                   onClick={() => {
                     close();
-                    void execute(p.action, p.ids, true);
+                    runWithOptionalPin(p.action, p.ids, true);
                   }}
                 >
                   Примусово{p.ids.length > 1 ? ` для всіх (${p.ids.length})` : ''}
@@ -529,7 +591,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           }
           confirmLabel={ACTIONS[confirm.action].label}
           danger={ACTIONS[confirm.action].danger}
-          onConfirm={() => void execute(confirm.action, confirm.ids)}
+          onConfirm={() => runWithOptionalPin(confirm.action, confirm.ids, false)}
           onClose={() => setConfirm(null)}
         />
       )}

@@ -54,6 +54,25 @@ const clamp = (v: number, min: number, max: number, fallback: number) =>
 const cleanIds = (ids: unknown): number[] =>
   Array.isArray(ids) ? [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : [];
 
+function sanitizeZoneThresholds(rawMap: unknown): Record<string, Partial<HealthThresholds>> | undefined {
+  if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) return undefined;
+  const cleanZones: Record<string, Partial<HealthThresholds>> = {};
+  for (const [z, raw] of Object.entries(rawMap as Record<string, unknown>)) {
+    const zoneName = z.trim();
+    if (!zoneName || !raw || typeof raw !== 'object') continue;
+    const obj = raw as Partial<HealthThresholds>;
+    const entry: Partial<HealthThresholds> = {};
+    if (typeof obj.minRamGb === 'number' && Number.isFinite(obj.minRamGb)) entry.minRamGb = clamp(obj.minRamGb, 0, 1024, 32);
+    if (typeof obj.minRefreshRateHz === 'number' && Number.isFinite(obj.minRefreshRateHz)) {
+      entry.minRefreshRateHz = clamp(obj.minRefreshRateHz, 0, 1000, 240);
+    }
+    if (typeof obj.maxGpuTempC === 'number' && Number.isFinite(obj.maxGpuTempC)) entry.maxGpuTempC = clamp(obj.maxGpuTempC, 0, 120, 85);
+    if (typeof obj.maxSsdWearPct === 'number' && Number.isFinite(obj.maxSsdWearPct)) entry.maxSsdWearPct = clamp(obj.maxSsdWearPct, 0, 100, 80);
+    if (Object.keys(entry).length) cleanZones[zoneName] = entry;
+  }
+  return Object.keys(cleanZones).length ? cleanZones : undefined;
+}
+
 /** Settings are normalised before saving so a bad value can never reach the agents. */
 export function sanitizeSettings(input: AppSettings, current: AppSettings): AppSettings {
   const s = mergeDefaults(current, input);
@@ -115,24 +134,7 @@ export function sanitizeSettings(input: AppSettings, current: AppSettings): AppS
   s.alerts.minRefreshRateHz = clamp(s.alerts.minRefreshRateHz, 0, 1000, 240);
   s.alerts.maxGpuTempC = clamp(s.alerts.maxGpuTempC, 0, 120, 85);
   s.alerts.maxSsdWearPct = clamp(s.alerts.maxSsdWearPct, 0, 100, 80);
-  if (input.alerts?.zoneThresholds && typeof input.alerts.zoneThresholds === 'object') {
-    const cleanZones: Record<string, Partial<HealthThresholds>> = {};
-    for (const [z, raw] of Object.entries(input.alerts.zoneThresholds)) {
-      const zoneName = z.trim();
-      if (!zoneName || !raw || typeof raw !== 'object') continue;
-      const entry: Partial<HealthThresholds> = {};
-      if (typeof raw.minRamGb === 'number' && Number.isFinite(raw.minRamGb)) entry.minRamGb = clamp(raw.minRamGb, 0, 1024, 32);
-      if (typeof raw.minRefreshRateHz === 'number' && Number.isFinite(raw.minRefreshRateHz)) {
-        entry.minRefreshRateHz = clamp(raw.minRefreshRateHz, 0, 1000, 240);
-      }
-      if (typeof raw.maxGpuTempC === 'number' && Number.isFinite(raw.maxGpuTempC)) entry.maxGpuTempC = clamp(raw.maxGpuTempC, 0, 120, 85);
-      if (typeof raw.maxSsdWearPct === 'number' && Number.isFinite(raw.maxSsdWearPct)) entry.maxSsdWearPct = clamp(raw.maxSsdWearPct, 0, 100, 80);
-      if (Object.keys(entry).length) cleanZones[zoneName] = entry;
-    }
-    s.alerts.zoneThresholds = Object.keys(cleanZones).length ? cleanZones : undefined;
-  } else {
-    s.alerts.zoneThresholds = undefined;
-  }
+  s.alerts.zoneThresholds = sanitizeZoneThresholds(input.alerts?.zoneThresholds);
   s.site.token = s.site.token.trim();
   s.site.heartbeatSec = clamp(s.site.heartbeatSec, 15, 86_400, 600);
   s.site.debounceSec = clamp(s.site.debounceSec, 0, 60, 2);
@@ -218,12 +220,26 @@ export class AdminStore {
 
     const loaded = readJson<AppSettings>(this.settingsFile);
     this.settings = mergeDefaults(defaultSettings(newClubKey()), loaded);
+    this.settings.alerts.zoneThresholds = sanitizeZoneThresholds(loaded?.alerts?.zoneThresholds);
+    this.settings.clubAppIds = cleanIds(this.settings.clubAppIds);
+    this.settings.ui.theme = ['light', 'dark', 'system'].includes(this.settings.ui.theme) ? this.settings.ui.theme : 'system';
+    this.settings.ui.language = ['uk', 'pl', 'en'].includes(this.settings.ui.language) ? this.settings.ui.language : 'uk';
     if (!this.settings.security.clubKey) this.settings.security.clubKey = newClubKey();
     if (!loaded) writeJson(this.settingsFile, this.settings);
 
-    const pcs = readJson<PcRecord[]>(this.pcsFile);
-    this.pcs = Array.isArray(pcs) ? pcs : structuredClone(SEED_PCS);
-    if (!pcs) writeJson(this.pcsFile, this.pcs);
+    const rawPcs = readJson<unknown[]>(this.pcsFile);
+    this.pcs = Array.isArray(rawPcs)
+      ? rawPcs
+          .filter((p): p is PcRecord => !!p && typeof p === 'object' && Number.isInteger(Number((p as PcRecord).id)) && Number((p as PcRecord).id) > 0)
+          .map((p) => ({
+            ...p,
+            id: Number(p.id),
+            ip: String(p.ip ?? '').trim(),
+            mac: normalizeMac(String(p.mac ?? '')) ?? String(p.mac ?? '').trim().toLowerCase(),
+            zone: String(p.zone ?? '').trim() || 'Regular',
+          }))
+      : structuredClone(SEED_PCS);
+    if (!Array.isArray(rawPcs)) writeJson(this.pcsFile, this.pcs);
     this.sortPcs();
 
     this.history = new HistoryStore(this.historyFile, this.settings.ui.historyRetentionDays);

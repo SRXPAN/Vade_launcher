@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { app, dialog, shell, type BrowserWindow } from 'electron';
-import { parseCidr } from '@vade/protocol';
+import { ipToInt, parseCidr } from '@vade/protocol';
 import { localIpv4 } from './scanner';
 import type { AdminStore } from './store';
 import { writeZipFile, type ZipEntry } from './zip';
@@ -57,16 +57,14 @@ export async function exportAgentPackage(win: BrowserWindow, store: AdminStore):
   return { ok: true, path: dest };
 }
 
-function ipToInt(ip: string): number {
-  const parts = ip.split('.').map(Number);
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-}
-
 /** Picks the admin PC's IPv4 belonging to the club subnet, or first local IPv4. */
 export function pickAdminLanIp(subnet: string, ips = localIpv4().map((x) => x.ip)): string {
   const parsed = parseCidr(subnet);
   if (parsed && ips.length > 0) {
-    const match = ips.find((ip) => (ipToInt(ip) & parsed.mask) === parsed.network);
+    const match = ips.find((ip) => {
+      const n = ipToInt(ip);
+      return n >= parsed.network && n <= parsed.broadcast;
+    });
     if (match) return match;
   }
   return ips[0] ?? '';

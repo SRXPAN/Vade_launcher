@@ -1,4 +1,4 @@
-import { CircleStop, Clock, Ellipsis, LogOut, Moon, PackageOpen, Pencil, Play, Power, PowerOff, RotateCcw, ScrollText, Snowflake, TimerOff, User } from 'lucide-react';
+import { Activity, CircleStop, Clock, Ellipsis, LogOut, Moon, PackageOpen, Pencil, Play, Power, PowerOff, RotateCcw, ScrollText, Snowflake, TimerOff, User } from 'lucide-react';
 import { memo, type ReactNode } from 'react';
 import {
   AFTER_ACTION_TITLES,
@@ -10,7 +10,6 @@ import {
   formatClockDrift,
   formatGb,
   isClockDrifted,
-  OCCUPANCY_TITLES,
   STEP_TITLES,
   type AlertSettings,
   type PcRecord,
@@ -18,6 +17,7 @@ import {
 } from '@vade/protocol';
 import type { PcAction } from '../shared/api';
 import { fmtAgo, fmtBytes, fmtDateTime, fmtTime, occupancyOf, occupancyText, RESULT_LABEL } from './format';
+import { useI18n } from './i18n';
 import { CheckBox, Menu, StatusBadge } from './ui';
 
 interface Props {
@@ -33,13 +33,15 @@ interface Props {
   onToggle: (id: number) => void;
   onAction: (action: PcAction, ids: number[]) => void;
   onLogs: (id: number) => void;
+  onDiag: (id: number) => void;
   onEdit: (pc: PcRecord) => void;
   onUpdateAgent: (ids: number[]) => void;
 }
 
 const POWER_LABEL = { ...AFTER_ACTION_TITLES, restart: 'Перезавантаження' } as const;
 
-function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, runState, onToggle, onAction, onLogs, onEdit, onUpdateAgent }: Props) {
+function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, runState, onToggle, onAction, onLogs, onDiag, onEdit, onUpdateAgent }: Props) {
+  const { t } = useI18n();
   const status = deriveDisplayStatus(rt);
   const occ = occupancyOf(rt);
   const online = rt?.link === 'online';
@@ -82,7 +84,7 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
         {occ && (
           <span className={`occ occ-${occ}`} title={occupancyText(rt)}>
             {occ === 'occupied' && <User size={11} strokeWidth={3} />}
-            {OCCUPANCY_TITLES[occ]}
+            {t(`occ.${occ}`)}
           </span>
         )}
       </div>
@@ -179,19 +181,19 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
         {runState && <div className="row" style={{ color: 'var(--accent)' }}>{runState}</div>}
       </div>
       <div className="card-actions" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn" title="Увімкнути (Wake-on-LAN)" onClick={() => act('wake')}>
+        <button className="icon-btn" title={t('action.wake')} onClick={() => act('wake')}>
           <Power size={15} />
         </button>
-        <button className="icon-btn" title="Обслуговування зараз (без вимкнення)" disabled={!online || !!job} onClick={() => act('test')}>
+        <button className="icon-btn" title={t('action.test')} disabled={!online || !!job} onClick={() => act('test')}>
           <Play size={15} />
         </button>
-        <button className="icon-btn" title="Очистити логіни зараз (Steam, браузери)" disabled={!online || !!job} onClick={() => act('clean-logins')}>
+        <button className="icon-btn" title={t('action.cleanLogins')} disabled={!online || !!job} onClick={() => act('clean-logins')}>
           <LogOut size={15} />
         </button>
-        <button className="icon-btn" title="Живий лог" onClick={() => onLogs(pc.id)}>
+        <button className="icon-btn" title={t('pcs.liveLog')} onClick={() => onLogs(pc.id)}>
           <ScrollText size={15} />
         </button>
-        <button className="icon-btn" title="Редагувати ПК" onClick={() => onEdit(pc)}>
+        <button className="icon-btn" title={t('pcs.editPc')} onClick={() => onEdit(pc)}>
           <Pencil size={15} />
         </button>
         <span className="spacer" />
@@ -218,14 +220,24 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
             );
             return (
               <>
-                {item('sleep', 'Сон', <Moon size={15} />)}
-                {item('hibernate', 'Гібернація', <Snowflake size={15} />)}
-                {item('shutdown', 'Вимкнути', <PowerOff size={15} />, true)}
-                {item('restart', 'Перезавантажити', <RotateCcw size={15} />, true)}
+                {item('sleep', t('action.sleep'), <Moon size={15} />)}
+                {item('hibernate', t('action.hibernate'), <Snowflake size={15} />)}
+                {item('shutdown', t('action.shutdown'), <PowerOff size={15} />, true)}
+                {item('restart', t('action.restart'), <RotateCcw size={15} />, true)}
                 <hr />
-                {item('cancel', 'Скасувати завдання', <CircleStop size={15} />)}
-                {item('cancel-power', 'Скасувати вимкнення', <TimerOff size={15} />)}
-                {item('sync-time', 'Синхронізувати час', <Clock size={15} />)}
+                {item('cancel', t('action.cancel'), <CircleStop size={15} />)}
+                {item('cancel-power', t('action.cancelPower'), <TimerOff size={15} />)}
+                {item('sync-time', t('action.syncTime'), <Clock size={15} />)}
+                <button
+                  disabled={!online}
+                  style={!online ? { opacity: 0.4 } : undefined}
+                  onClick={() => {
+                    close();
+                    if (online) onDiag(pc.id);
+                  }}
+                >
+                  <Activity size={15} /> {t('pcs.quickDiag')}
+                </button>
                 <hr />
                 <button
                   disabled={!online}
@@ -235,7 +247,7 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
                     if (online) onUpdateAgent([pc.id]);
                   }}
                 >
-                  <PackageOpen size={15} /> Оновити агент…
+                  <PackageOpen size={15} /> {t('pcs.updateAgentAction')}
                 </button>
               </>
             );
