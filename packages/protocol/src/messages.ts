@@ -22,7 +22,10 @@ import type {
   DeployFileResult,
   DiagActionResult,
   DiagBundleResult,
+  DiagNotifyArgs,
   DiagProcess,
+  DiagRestartLauncherArgs,
+  DiagRestoreRefreshRateArgs,
   DiagScreenshotResult,
   GamesInstallResult,
   GamesUninstallResult,
@@ -124,6 +127,9 @@ export interface Commands {
   'diag.restartExplorer': { args: Record<string, never>; result: DiagActionResult };
   'diag.screenshot': { args: Record<string, never>; result: DiagScreenshotResult };
   'diag.bundle': { args: Record<string, never>; result: DiagBundleResult };
+  'diag.notify': { args: DiagNotifyArgs; result: DiagActionResult };
+  'diag.restoreRefreshRate': { args: DiagRestoreRefreshRateArgs; result: DiagActionResult };
+  'diag.restartLauncher': { args: DiagRestartLauncherArgs; result: DiagActionResult };
   'deploy.exec': { args: DeployExecArgs; result: DeployExecResult };
   'deploy.file': { args: DeployFileArgs; result: DeployFileResult };
 }

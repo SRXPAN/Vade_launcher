@@ -47,7 +47,7 @@ function buildDetail(r: OccupancyResult, p: PresenceReport | null): string {
 export class OccupancyDetector {
   state: DetectorState = { occupancy: 'unknown', reason: 'no_input_data', presence: null };
   private timer: NodeJS.Timeout | null = null;
-  private busy = false;
+  private inFlight: Promise<void> | null = null;
   private lastGood: PresenceReport | null = null;
   private lastGame: string | undefined;
   private lastEmit = 0;
@@ -56,7 +56,9 @@ export class OccupancyDetector {
 
   start(intervalMs = 10_000): void {
     this.stop();
-    this.timer = setInterval(() => void this.tick(), intervalMs);
+    this.timer = setInterval(() => {
+      if (!this.inFlight) void this.tick();
+    }, intervalMs);
     void this.tick();
   }
 
@@ -65,9 +67,24 @@ export class OccupancyDetector {
     this.timer = null;
   }
 
-  async tick(now = Date.now()): Promise<void> {
-    if (this.busy) return;
-    this.busy = true;
+  async tick(now?: number): Promise<void> {
+    if (this.inFlight) {
+      await this.inFlight;
+    }
+    if (this.inFlight) {
+      await this.inFlight;
+      return;
+    }
+    const run = this.runTick(now ?? Date.now());
+    this.inFlight = run;
+    try {
+      await run;
+    } finally {
+      if (this.inFlight === run) this.inFlight = null;
+    }
+  }
+
+  private async runTick(now: number): Promise<void> {
     try {
       const settings = this.d.getSettings();
       let presence: PresenceReport | null = null;
@@ -82,8 +99,6 @@ export class OccupancyDetector {
       this.apply(evaluateOccupancy({ settings, presence, procs }), presence, now);
     } catch (e) {
       this.d.log.warn(`Детектор зайнятості: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      this.busy = false;
     }
   }
 

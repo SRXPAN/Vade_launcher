@@ -1,10 +1,14 @@
 /** Contract between the renderer (window.vade) and the Electron main process. */
 import type {
+  AdminRole,
   AppSettings,
+  AuditAction,
+  AuditEntry,
   DeployExecResult,
   DeployFileResult,
   DeployShell,
   DiagActionResult,
+  DiagNotifyArgs,
   DiagProcess,
   DiagScreenshotResult,
   GamesInstallResult,
@@ -15,7 +19,9 @@ import type {
   LogLine,
   PcRecord,
   PcRuntime,
+  RestartLauncherApp,
   SteamLoginResult,
+  ThemeMode,
 } from '@vade/protocol';
 import type { MapLayout } from './mapLayout';
 
@@ -240,16 +246,57 @@ export interface AppUpdateState {
   message?: string;
 }
 
+export interface RoleState {
+  pinEnabled: boolean;
+  role: AdminRole;
+  unlockedUntil: number | null;
+  ownerSessionMin: number;
+  operatorName: string;
+}
+
+export interface PcServiceNoteInput {
+  outOfService: boolean;
+  text: string;
+  author?: string;
+}
+
+export interface BackupImportResult {
+  ok: boolean;
+  path?: string;
+  preBackupDir?: string;
+  settings?: AppSettings;
+  pcs?: PcRecord[];
+  error?: string;
+}
+
+export interface BackupStatus {
+  autoEnabled: boolean;
+  dir: string;
+  keepCount: number;
+  lastAutoBackupAt: string | null;
+  lastError: string | null;
+}
+
 export interface VadeApi {
   getAppInfo(): Promise<AppInfo>;
   getSettings(): Promise<AppSettings>;
   saveSettings(settings: AppSettings): Promise<AppSettings>;
+  setTheme(theme: ThemeMode): Promise<AppSettings>;
   regenerateClubKey(): Promise<AppSettings>;
   setPin(currentPin: string | undefined, newPin: string | null): Promise<{ ok: boolean; settings?: AppSettings; error?: string }>;
   verifyPin(pin: string): Promise<boolean>;
+  getRoleState(): Promise<RoleState>;
+  unlockOwner(pin: string): Promise<{ ok: boolean; state: RoleState; error?: string }>;
+  lockOwner(): Promise<RoleState>;
+  setOperatorName(name: string): Promise<RoleState>;
+  onRoleChanged(cb: (s: RoleState) => void): () => void;
+  listAudit(): Promise<AuditEntry[]>;
+  recordAudit(action: AuditAction, targets: string[], details?: string): Promise<void>;
+  onAuditChanged(cb: (entries: AuditEntry[]) => void): () => void;
   listPcs(): Promise<PcRecord[]>;
   savePc(pc: PcRecord, originalId: number | null): Promise<SavePcResult>;
   deletePcs(ids: number[]): Promise<PcRecord[]>;
+  setPcServiceNote(pcId: number, note: PcServiceNoteInput | null): Promise<PcRecord[]>;
   /** Club floor map (map_layout.json) */
   getMapLayout(): Promise<MapLayout>;
   /** Normalises and saves the map; returns what was written */
@@ -285,7 +332,15 @@ export interface VadeApi {
   diagKillProcess(pcId: number, pid: number): Promise<DiagActionResult>;
   diagRestartExplorer(pcId: number): Promise<DiagActionResult>;
   diagScreenshot(pcId: number): Promise<DiagScreenshotResult>;
+  diagNotify(pcId: number, args: DiagNotifyArgs): Promise<DiagActionResult>;
+  diagRestoreRefreshRate(pcId: number, targetHz: number): Promise<DiagActionResult>;
+  diagRestartLauncher(pcId: number, app: RestartLauncherApp): Promise<DiagActionResult>;
   exportDiagnosticsZip(pcId?: number): Promise<{ ok: boolean; path?: string; error?: string }>;
+  exportBackup(): Promise<{ ok: boolean; path?: string; error?: string }>;
+  importBackup(): Promise<BackupImportResult>;
+  pickBackupDir(): Promise<string | null>;
+  runAutoBackupNow(): Promise<{ ok: boolean; path?: string; error?: string }>;
+  getBackupStatus(): Promise<BackupStatus>;
   pickDeployFile(): Promise<PickedDeployFile | null>;
   startDeployExec(req: DeployExecRequest): Promise<{ ok: boolean; error?: string }>;
   startDeployFile(req: DeployFileRequest): Promise<{ ok: boolean; error?: string }>;
@@ -308,12 +363,20 @@ export const IPC = {
   appInfo: 'app:info',
   settingsGet: 'settings:get',
   settingsSave: 'settings:save',
+  uiSetTheme: 'ui:set-theme',
   settingsRegenKey: 'settings:regen-key',
   pinSet: 'security:pin-set',
   pinVerify: 'security:pin-verify',
+  roleGet: 'role:get',
+  roleUnlock: 'role:unlock',
+  roleLock: 'role:lock',
+  roleSetOperator: 'role:set-operator',
+  auditList: 'audit:list',
+  auditLog: 'audit:log',
   pcsList: 'pcs:list',
   pcsSave: 'pcs:save',
   pcsDelete: 'pcs:delete',
+  pcSetServiceNote: 'pcs:set-service-note',
   mapGet: 'map:get',
   mapSave: 'map:save',
   mapExport: 'map:export',
@@ -343,7 +406,15 @@ export const IPC = {
   diagKillProcess: 'diag:kill-process',
   diagRestartExplorer: 'diag:restart-explorer',
   diagScreenshot: 'diag:screenshot',
+  diagNotify: 'diag:notify',
+  diagRestoreRefreshRate: 'diag:restore-hz',
+  diagRestartLauncher: 'diag:restart-launcher',
   diagExportZip: 'diag:export-zip',
+  backupExport: 'backup:export',
+  backupImport: 'backup:import',
+  backupPickDir: 'backup:pick-dir',
+  backupRunNow: 'backup:run-now',
+  backupStatus: 'backup:status',
   deployPickFile: 'deploy:pick-file',
   deployExecStart: 'deploy:exec-start',
   deployFileStart: 'deploy:file-start',
@@ -364,4 +435,6 @@ export const IPC = {
   pcsChanged: 'pcs:changed',
   historyList: 'history:list',
   historyUpdate: 'history:update',
+  roleChanged: 'role:changed',
+  auditUpdate: 'audit:update',
 } as const;

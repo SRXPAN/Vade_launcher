@@ -1,18 +1,22 @@
-import { Activity, Camera, Download, FolderSync, LoaderCircle, Search, Skull } from 'lucide-react';
+import { Activity, Camera, Download, FolderSync, LoaderCircle, MessageSquare, Monitor, RefreshCw, Search, Skull } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { DiagProcess, DiagScreenshotResult, PcRecord, PcRuntime } from '@vade/protocol';
+import { resolveHealthThresholds, type AppSettings, type DiagProcess, type DiagScreenshotResult, type PcRecord, type PcRuntime, type RestartLauncherApp } from '@vade/protocol';
 import { api, errorText } from './api';
 import { useI18n } from './i18n';
+import { NotifyModal } from './NotifyModal';
 import { ConfirmDialog, Modal, useToast } from './ui';
 
 interface Props {
   pc: PcRecord;
   rt: PcRuntime | undefined;
+  settings?: AppSettings;
+  targetHz?: number;
   onClose: () => void;
 }
 
-export function DiagDialog({ pc, rt, onClose }: Props) {
+export function DiagDialog({ pc, rt, settings, targetHz, onClose }: Props) {
   const { t, locale } = useI18n();
+  const tr = (k: string, p?: Record<string, string | number>) => t(k as never, p);
   const toast = useToast();
   const [procs, setProcs] = useState<DiagProcess[]>([]);
   const [loadingProcs, setLoadingProcs] = useState(false);
@@ -24,8 +28,11 @@ export function DiagDialog({ pc, rt, onClose }: Props) {
   const [capturing, setCapturing] = useState(false);
   const [screen, setScreen] = useState<DiagScreenshotResult | null>(null);
   const [screenError, setScreenError] = useState<string | null>(null);
+  const [notifyOpen, setNotifyOpen] = useState(false);
+  const [techBusy, setTechBusy] = useState<'hz' | 'steam' | 'riot' | null>(null);
 
   const online = rt?.link === 'online';
+  const resolvedHz = targetHz ?? (settings ? resolveHealthThresholds(settings.alerts, pc.zone).minRefreshRateHz || 240 : 240);
 
   const loadProcesses = useCallback(async () => {
     setLoadingProcs(true);
@@ -101,6 +108,39 @@ export function DiagDialog({ pc, rt, onClose }: Props) {
     a.click();
   };
 
+  const restoreRefreshRate = async () => {
+    if (techBusy) return;
+    setTechBusy('hz');
+    try {
+      const res = await api.diagRestoreRefreshRate(pc.id, resolvedHz);
+      if (res.ok) {
+        void api.recordAudit('diag.restore_hz', [String(pc.id)], `${resolvedHz} Hz`).catch(() => undefined);
+      }
+      toast(res.ok ? 'ok' : 'warn', res.message);
+    } catch (e) {
+      toast('error', errorText(e));
+    } finally {
+      setTechBusy(null);
+    }
+  };
+
+  const restartLauncher = async (app: RestartLauncherApp) => {
+    if (techBusy) return;
+    setTechBusy(app);
+    try {
+      const res = await api.diagRestartLauncher(pc.id, app);
+      if (res.ok) {
+        void api.recordAudit('diag.restart_launcher', [String(pc.id)], app).catch(() => undefined);
+        void loadProcesses();
+      }
+      toast(res.ok ? 'ok' : 'warn', res.message);
+    } catch (e) {
+      toast('error', errorText(e));
+    } finally {
+      setTechBusy(null);
+    }
+  };
+
   return (
     <Modal
       wide
@@ -113,7 +153,7 @@ export function DiagDialog({ pc, rt, onClose }: Props) {
         </button>
       }
     >
-      <div className="toolbar-row" style={{ marginBottom: 12 }}>
+      <div className="toolbar-row" style={{ marginBottom: 8 }}>
         <button className="btn small" disabled={!online || loadingProcs} onClick={() => void loadProcesses()}>
           {loadingProcs ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}
           {t('diag.refreshProcs')}
@@ -137,6 +177,37 @@ export function DiagDialog({ pc, rt, onClose }: Props) {
             placeholder={t('diag.procFilter')}
           />
         </div>
+      </div>
+
+      <div
+        className="toolbar-row"
+        style={{
+          marginBottom: 12,
+          padding: '6px 10px',
+          borderRadius: 'var(--radius-sm)',
+          background: 'var(--panel-2)',
+          border: '1px solid var(--border)',
+        }}
+      >
+        <span className="dim" style={{ fontSize: 12, fontWeight: 600 }}>
+          {tr('diag.quickTechLabel')}
+        </span>
+        <button className="btn small" disabled={!online} onClick={() => setNotifyOpen(true)}>
+          <MessageSquare size={14} />
+          {tr('diag.sendMessage')}
+        </button>
+        <button className="btn small" disabled={!online || techBusy !== null} onClick={() => void restoreRefreshRate()}>
+          {techBusy === 'hz' ? <LoaderCircle size={14} className="spin" /> : <Monitor size={14} />}
+          {tr('diag.restoreHz', { hz: resolvedHz })}
+        </button>
+        <button className="btn small" disabled={!online || techBusy !== null} onClick={() => void restartLauncher('steam')}>
+          {techBusy === 'steam' ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
+          {tr('diag.restartSteam')}
+        </button>
+        <button className="btn small" disabled={!online || techBusy !== null} onClick={() => void restartLauncher('riot')}>
+          {techBusy === 'riot' ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
+          {tr('diag.restartRiot')}
+        </button>
       </div>
 
       {screenError && <div className="errors">{screenError}</div>}
@@ -219,6 +290,7 @@ export function DiagDialog({ pc, rt, onClose }: Props) {
           onClose={() => setConfirmKill(null)}
         />
       )}
+      {notifyOpen && <NotifyModal pc={pc} onClose={() => setNotifyOpen(false)} />}
     </Modal>
   );
 }

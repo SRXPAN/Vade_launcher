@@ -1,4 +1,5 @@
 import {
+  Archive,
   Copy,
   Cpu,
   Download,
@@ -13,13 +14,17 @@ import {
   Network,
   Package,
   RefreshCw,
+  Save,
   TriangleAlert,
+  Upload,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { AppLanguage, AppSettings, HealthThresholds, ThemeMode } from '@vade/protocol';
-import type { AppInfo, AppUpdateState } from '../shared/api';
+import type { AppLanguage, AppSettings, HealthThresholds, PcRecord, ThemeMode } from '@vade/protocol';
+import type { AppInfo, AppUpdateState, BackupStatus } from '../shared/api';
 import { api, errorText } from './api';
+import { fmtDateTime } from './format';
 import { LANGUAGE_LABELS, useI18n } from './i18n';
+import { useRole } from './role';
 import { SaveBar } from './SaveBar';
 import { ConfirmDialog, Option, Segmented, useToast } from './ui';
 import { useDraft } from './useDraft';
@@ -27,18 +32,24 @@ import { useDraft } from './useDraft';
 interface Props {
   settings: AppSettings;
   onSaved: (s: AppSettings) => void;
+  onRestored?: (res: { settings?: AppSettings; pcs?: PcRecord[] }) => void;
   info: AppInfo | null;
 }
 
-export function SettingsView({ settings, onSaved, info }: Props) {
-  const { t } = useI18n();
+export function SettingsView({ settings, onSaved, onRestored, info }: Props) {
+  const { t, locale } = useI18n();
+  const tr = (k: string, p?: Record<string, string | number>) => t(k as never, p);
   const toast = useToast();
+  const { requireOwner } = useRole();
   const { draft, update, dirty, reset, save, error, saving } = useDraft(settings, onSaved);
   const [showKey, setShowKey] = useState(false);
   const [confirmRegen, setConfirmRegen] = useState(false);
+  const [confirmImportBackup, setConfirmImportBackup] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportingZip, setExportingZip] = useState(false);
   const [exportingDiag, setExportingDiag] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
@@ -50,16 +61,21 @@ export function SettingsView({ settings, onSaved, info }: Props) {
 
   useEffect(() => {
     void api.getAppUpdateStatus().then(setAppUpd);
+    void api.getBackupStatus().then(setBackupStatus).catch(() => undefined);
     return api.onAppUpdateStatus(setAppUpd);
   }, []);
 
-  const regen = async () => {
-    try {
-      onSaved(await api.regenerateClubKey());
-      toast('warn', 'Новий ключ створено. Перевстановіть агент на всіх ПК (експортуйте пакет ще раз).');
-    } catch (e) {
-      toast('error', errorText(e));
-    }
+  const regen = () => {
+    requireOwner(tr('settings.regenKey'), () => {
+      void (async () => {
+        try {
+          onSaved(await api.regenerateClubKey());
+          toast('warn', 'Новий ключ створено. Перевстановіть агент на всіх ПК (експортуйте пакет ще раз).');
+        } catch (e) {
+          toast('error', errorText(e));
+        }
+      })();
+    });
   };
 
   const exportPkg = async () => {
@@ -86,7 +102,7 @@ export function SettingsView({ settings, onSaved, info }: Props) {
     }
   };
 
-  const savePin = async (disable = false) => {
+  const savePin = (disable = false) => {
     if (!disable) {
       if (newPin.trim().length < 4) {
         toast('error', t('settings.pinMinLen'));
@@ -97,22 +113,95 @@ export function SettingsView({ settings, onSaved, info }: Props) {
         return;
       }
     }
-    setPinBusy(true);
-    try {
-      const res = await api.setPin(hasPin ? currentPin : undefined, disable ? null : newPin);
-      if (!res.ok) {
-        toast('error', res.error ?? t('settings.pinError'));
-        return;
+    const execSavePin = async () => {
+      setPinBusy(true);
+      try {
+        const res = await api.setPin(hasPin ? currentPin : undefined, disable ? null : newPin);
+        if (!res.ok) {
+          toast('error', res.error ?? t('settings.pinError'));
+          return;
+        }
+        if (res.settings) onSaved(res.settings);
+        setCurrentPin('');
+        setNewPin('');
+        setConfirmPin('');
+        toast('ok', disable ? t('settings.pinStatusOff') : t('settings.pinStatusOn'));
+      } catch (e) {
+        toast('error', errorText(e));
+      } finally {
+        setPinBusy(false);
       }
-      if (res.settings) onSaved(res.settings);
-      setCurrentPin('');
-      setNewPin('');
-      setConfirmPin('');
-      toast('ok', disable ? t('settings.pinStatusOff') : t('settings.pinStatusOn'));
+    };
+    if (hasPin) requireOwner(t('settings.pinSection'), () => void execSavePin());
+    else void execSavePin();
+  };
+
+  const exportBackup = () => {
+    requireOwner(tr('backup.exportBtn'), () => {
+      void (async () => {
+        setBackupBusy(true);
+        try {
+          const r = await api.exportBackup();
+          if (r.ok) toast('ok', tr('backup.exportedToast', { path: r.path ?? '' }));
+          else if (r.error) toast('error', r.error);
+        } catch (e) {
+          toast('error', errorText(e));
+        } finally {
+          setBackupBusy(false);
+        }
+      })();
+    });
+  };
+
+  const importBackup = () => {
+    requireOwner(tr('backup.importBtn'), () => {
+      void (async () => {
+        setBackupBusy(true);
+        try {
+          const r = await api.importBackup();
+          if (r.ok) {
+            onRestored?.({ settings: r.settings, pcs: r.pcs });
+            toast('ok', tr('backup.importedToast', { dir: r.preBackupDir ?? '' }));
+            void api.getBackupStatus().then(setBackupStatus).catch(() => undefined);
+          } else if (r.error) {
+            toast('error', r.error);
+          }
+        } catch (e) {
+          toast('error', errorText(e));
+        } finally {
+          setBackupBusy(false);
+        }
+      })();
+    });
+  };
+
+  const runBackupNow = () => {
+    requireOwner(tr('backup.runNowBtn'), () => {
+      void (async () => {
+        setBackupBusy(true);
+        try {
+          const r = await api.runAutoBackupNow();
+          if (r.ok) {
+            toast('ok', tr('backup.exportedToast', { path: r.path ?? '' }));
+            void api.getBackupStatus().then(setBackupStatus).catch(() => undefined);
+          } else if (r.error) {
+            toast('error', r.error);
+          }
+        } catch (e) {
+          toast('error', errorText(e));
+        } finally {
+          setBackupBusy(false);
+        }
+      })();
+    });
+  };
+
+  const pickBackupDir = async () => {
+    try {
+      const picked = await api.pickBackupDir();
+      if (picked) update((d) => void (d.backup.dir = picked));
     } catch (e) {
       toast('error', errorText(e));
-    } finally {
-      setPinBusy(false);
     }
   };
 
@@ -316,6 +405,38 @@ export function SettingsView({ settings, onSaved, info }: Props) {
                 )}
               </div>
             </div>
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+              <Option
+                title={tr('health.enabledTitle')}
+                desc={tr('health.enabledDesc')}
+                on={draft.health.enabled}
+                onChange={(v) => update((d) => void (d.health.enabled = v))}
+              >
+                <div className="field" style={{ maxWidth: 200, marginBottom: 8 }}>
+                  <label>{tr('health.pollIntervalLabel')}</label>
+                  <input
+                    className="input"
+                    type="number"
+                    min={30}
+                    max={600}
+                    value={draft.health.pollIntervalSec}
+                    onChange={(e) => update((d) => void (d.health.pollIntervalSec = Number(e.target.value)))}
+                  />
+                </div>
+                <Option
+                  title={tr('health.collectTempsTitle')}
+                  desc={tr('health.collectTempsDesc')}
+                  on={draft.health.collectTemps}
+                  onChange={(v) => update((d) => void (d.health.collectTemps = v))}
+                />
+                <Option
+                  title={tr('health.collectSmartTitle')}
+                  desc={tr('health.collectSmartDesc')}
+                  on={draft.health.collectSmart}
+                  onChange={(v) => update((d) => void (d.health.collectSmart = v))}
+                />
+              </Option>
+            </div>
           </section>
 
           <section className="section">
@@ -408,16 +529,96 @@ export function SettingsView({ settings, onSaved, info }: Props) {
                 <label>{t('settings.pinConfirm')}</label>
                 <input className="input mono" type="password" value={confirmPin} onChange={(e) => setConfirmPin(e.target.value)} />
               </div>
+              <div className="field full">
+                <label>{tr('settings.ownerSessionMin')}</label>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={240}
+                  style={{ maxWidth: 140 }}
+                  value={draft.security.ownerSessionMin}
+                  onChange={(e) => update((d) => void (d.security.ownerSessionMin = Number(e.target.value)))}
+                />
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-              <button className="btn small primary" disabled={pinBusy || !newPin.trim()} onClick={() => void savePin(false)}>
+              <button className="btn small primary" disabled={pinBusy || !newPin.trim()} onClick={() => savePin(false)}>
                 {t('settings.pinSave')}
               </button>
               {hasPin && (
-                <button className="btn small danger" disabled={pinBusy || !currentPin.trim()} onClick={() => void savePin(true)}>
+                <button className="btn small danger" disabled={pinBusy || !currentPin.trim()} onClick={() => savePin(true)}>
                   {t('settings.pinDisable')}
                 </button>
               )}
+            </div>
+          </section>
+
+          <section className="section">
+            <h2>
+              <Archive size={17} /> {tr('backup.sectionTitle')}
+            </h2>
+            <div className="hint">{tr('backup.sectionHint')}</div>
+            <div className="backup-box">
+              <div className="backup-actions">
+                <button type="button" className="btn small primary" disabled={backupBusy} onClick={exportBackup}>
+                  <Save size={14} /> {tr('backup.exportBtn')}
+                </button>
+                <button type="button" className="btn small" disabled={backupBusy} onClick={() => requireOwner(tr('backup.importBtn'), () => setConfirmImportBackup(true))}>
+                  <Upload size={14} /> {tr('backup.importBtn')}
+                </button>
+              </div>
+              <Option
+                title={tr('backup.autoTitle')}
+                desc={tr('backup.autoDesc')}
+                on={draft.backup.autoEnabled}
+                onChange={(v) => update((d) => void (d.backup.autoEnabled = v))}
+              >
+                <div className="form-grid" style={{ marginTop: 6 }}>
+                  <div className="field full">
+                    <label>{tr('backup.dirLabel')}</label>
+                    <div className="key-row">
+                      <input
+                        className="input mono"
+                        value={draft.backup.dir}
+                        placeholder={tr('backup.dirPlaceholder')}
+                        onChange={(e) => update((d) => void (d.backup.dir = e.target.value))}
+                      />
+                      <button type="button" className="btn small" onClick={() => void pickBackupDir()}>
+                        <FolderOpen size={14} /> {tr('backup.pickDirBtn')}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label>{tr('backup.keepCountLabel')}</label>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={draft.backup.keepCount}
+                      onChange={(e) => update((d) => void (d.backup.keepCount = Number(e.target.value)))}
+                    />
+                  </div>
+                  <div className="field" style={{ justifyContent: 'flex-end' }}>
+                    <button type="button" className="btn small" disabled={backupBusy || !draft.backup.dir.trim()} onClick={runBackupNow}>
+                      <RefreshCw size={13} /> {tr('backup.runNowBtn')}
+                    </button>
+                  </div>
+                </div>
+                {(draft.backup.lastAutoBackupAt || backupStatus?.lastAutoBackupAt) && (
+                  <div className="hint" style={{ marginTop: 6 }}>
+                    {tr('backup.lastAutoAt', {
+                      time: fmtDateTime((backupStatus?.lastAutoBackupAt ?? draft.backup.lastAutoBackupAt)!, locale, t('common.todayTime')),
+                    })}
+                  </div>
+                )}
+                {backupStatus?.lastError && (
+                  <div className="s-error" style={{ fontSize: 12, marginTop: 4 }}>
+                    {backupStatus.lastError}
+                  </div>
+                )}
+              </Option>
             </div>
           </section>
 
@@ -510,15 +711,25 @@ export function SettingsView({ settings, onSaved, info }: Props) {
           </section>
         </div>
       </div>
-      <SaveBar dirty={dirty} saving={saving} onSave={() => void save()} onReset={reset} />
+      <SaveBar dirty={dirty} saving={saving} onSave={save} onReset={reset} />
       {confirmRegen && (
         <ConfirmDialog
           title="Згенерувати новий ключ клубу?"
           text="Усі встановлені агенти перестануть приймати команди, доки ви не перевстановите їх з новим пакетом."
           confirmLabel="Згенерувати"
           danger
-          onConfirm={() => void regen()}
+          onConfirm={regen}
           onClose={() => setConfirmRegen(false)}
+        />
+      )}
+      {confirmImportBackup && (
+        <ConfirmDialog
+          title={tr('backup.confirmImportTitle')}
+          text={tr('backup.confirmImportText')}
+          confirmLabel={tr('backup.importBtn')}
+          danger
+          onConfirm={importBackup}
+          onClose={() => setConfirmImportBackup(false)}
         />
       )}
     </div>

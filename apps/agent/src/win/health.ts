@@ -1,8 +1,22 @@
 import fs from 'node:fs';
 import os from 'node:os';
-import type { HardwareHealth, SsdHealth } from '@vade/protocol';
+import { DEFAULT_HEALTH_TELEMETRY, type HardwareHealth, type HealthTelemetrySettings, type SsdHealth } from '@vade/protocol';
 import type { Sys } from '../sys';
 import { EXE } from '../win/paths';
+
+export function normalizeHealthSettings(raw?: Partial<HealthTelemetrySettings> | null): HealthTelemetrySettings {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const pollRaw =
+    typeof src.pollIntervalSec === 'number' && Number.isFinite(src.pollIntervalSec)
+      ? Math.round(src.pollIntervalSec)
+      : DEFAULT_HEALTH_TELEMETRY.pollIntervalSec;
+  return {
+    enabled: typeof src.enabled === 'boolean' ? src.enabled : DEFAULT_HEALTH_TELEMETRY.enabled,
+    pollIntervalSec: Math.min(600, Math.max(30, pollRaw)),
+    collectTemps: typeof src.collectTemps === 'boolean' ? src.collectTemps : DEFAULT_HEALTH_TELEMETRY.collectTemps,
+    collectSmart: typeof src.collectSmart === 'boolean' ? src.collectSmart : DEFAULT_HEALTH_TELEMETRY.collectSmart,
+  };
+}
 
 const NVIDIA_SMI_FALLBACK = 'C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe';
 
@@ -78,7 +92,8 @@ export function healthChanged(a: HardwareHealth | null, b: HardwareHealth | null
 }
 
 /**
- * Polls GPU temperature & monitor refresh rate every 60 s, and RAM + SSD SMART reliability every 6 h.
+ * Polls GPU temperature & monitor refresh rate on a configurable fast cadence (default 60 s),
+ * and RAM + SSD SMART reliability every 6 h.
  * Missing sensors/tools return null silently without spamming logs.
  */
 export class HealthMonitor {
@@ -87,6 +102,10 @@ export class HealthMonitor {
   private slowTimer: NodeJS.Timeout | null = null;
   private fastBusy = false;
   private slowBusy = false;
+  private activeIntervalMs: number | null = null;
+  private enabled = false;
+  private lastCollectTemps = true;
+  private lastCollectSmart = true;
 
   private ramTotalGb = Math.max(1, Math.round(os.totalmem() / 1024 ** 3));
   private refreshRateHz: number | null = null;
@@ -96,15 +115,60 @@ export class HealthMonitor {
   constructor(
     private readonly sys: Sys,
     private readonly onChange: () => void,
+    private readonly getSettings: () => HealthTelemetrySettings = () => DEFAULT_HEALTH_TELEMETRY,
   ) {}
 
-  start(fastIntervalMs = 60_000, slowIntervalMs = 6 * 3600_000): void {
+  start(fastIntervalMs?: number, slowIntervalMs = 6 * 3600_000): void {
+    const cfg = normalizeHealthSettings(this.getSettings());
+    if (!cfg.enabled) {
+      this.disable();
+      return;
+    }
+
+    const effectiveFastMs = fastIntervalMs ?? cfg.pollIntervalSec * 1000;
     this.stop();
-    this.fastTimer = setInterval(() => void this.tickFast(), fastIntervalMs);
+    this.enabled = true;
+    this.activeIntervalMs = effectiveFastMs;
+    this.lastCollectTemps = cfg.collectTemps;
+    this.lastCollectSmart = cfg.collectSmart;
+    this.fastTimer = setInterval(() => void this.tickFast(), effectiveFastMs);
     this.slowTimer = setInterval(() => void this.tickSlow(), slowIntervalMs);
     this.fastTimer.unref?.();
     this.slowTimer.unref?.();
     void this.tickSlow().then(() => this.tickFast());
+  }
+
+  reconfigure(slowIntervalMs = 6 * 3600_000): void {
+    const cfg = normalizeHealthSettings(this.getSettings());
+    if (!cfg.enabled) {
+      this.disable();
+      return;
+    }
+
+    const targetMs = cfg.pollIntervalSec * 1000;
+    if (!this.enabled || this.activeIntervalMs !== targetMs || !this.fastTimer) {
+      this.start(targetMs, slowIntervalMs);
+      return;
+    }
+
+    const prevTemps = this.lastCollectTemps;
+    const prevSmart = this.lastCollectSmart;
+    this.lastCollectTemps = cfg.collectTemps;
+    this.lastCollectSmart = cfg.collectSmart;
+
+    if (!cfg.collectTemps && this.gpuTempC !== null) {
+      this.gpuTempC = null;
+      if (this.health) this.commit();
+    } else if (cfg.collectTemps && !prevTemps) {
+      void this.tickFast();
+    }
+
+    if (!cfg.collectSmart && this.ssd.length > 0) {
+      this.ssd = [];
+      if (this.health) this.commit();
+    } else if (cfg.collectSmart && !prevSmart) {
+      void this.tickSlow();
+    }
   }
 
   stop(): void {
@@ -112,9 +176,22 @@ export class HealthMonitor {
     if (this.slowTimer) clearInterval(this.slowTimer);
     this.fastTimer = null;
     this.slowTimer = null;
+    this.activeIntervalMs = null;
+    this.enabled = false;
+  }
+
+  private disable(): void {
+    const hadHealth = this.health !== null;
+    this.stop();
+    this.health = null;
+    this.gpuTempC = null;
+    this.refreshRateHz = null;
+    this.ssd = [];
+    if (hadHealth) this.onChange();
   }
 
   private commit(): void {
+    if (!normalizeHealthSettings(this.getSettings()).enabled) return;
     const next: HardwareHealth = {
       ramTotalGb: this.ramTotalGb,
       refreshRateHz: this.refreshRateHz,
@@ -128,13 +205,20 @@ export class HealthMonitor {
   }
 
   async tickFast(): Promise<void> {
-    if (this.fastBusy) return;
+    const cfg = normalizeHealthSettings(this.getSettings());
+    if (!cfg.enabled || this.fastBusy) return;
     this.fastBusy = true;
     try {
-      const smi = resolveNvidiaSmi();
-      if (smi) {
-        const r = await this.sys.exec(smi, ['--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'], 10_000, 'utf8').catch(() => null);
-        this.gpuTempC = r && r.code === 0 ? parseNvidiaTemp(r.stdout) : null;
+      if (cfg.collectTemps) {
+        const smi = resolveNvidiaSmi();
+        if (smi) {
+          const r = await this.sys.exec(smi, ['--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'], 10_000, 'utf8').catch(() => null);
+          const current = normalizeHealthSettings(this.getSettings());
+          if (!current.enabled) return;
+          this.gpuTempC = current.collectTemps && r && r.code === 0 ? parseNvidiaTemp(r.stdout) : null;
+        } else {
+          this.gpuTempC = null;
+        }
       } else {
         this.gpuTempC = null;
       }
@@ -145,6 +229,7 @@ export class HealthMonitor {
           { mutating: false, timeoutMs: 15_000 },
         )
         .catch(() => null);
+      if (!normalizeHealthSettings(this.getSettings()).enabled) return;
       this.refreshRateHz = mon && mon.code === 0 ? parseRefreshRate(mon.stdout) : null;
       this.commit();
     } finally {
@@ -153,7 +238,8 @@ export class HealthMonitor {
   }
 
   async tickSlow(): Promise<void> {
-    if (this.slowBusy) return;
+    const cfg = normalizeHealthSettings(this.getSettings());
+    if (!cfg.enabled || this.slowBusy) return;
     this.slowBusy = true;
     try {
       const ram = await this.sys
@@ -162,11 +248,13 @@ export class HealthMonitor {
           { mutating: false, timeoutMs: 15_000 },
         )
         .catch(() => null);
+      if (!normalizeHealthSettings(this.getSettings()).enabled) return;
       this.ramTotalGb = parseRamTotalGb(ram && ram.code === 0 ? ram.stdout : '', os.totalmem());
 
-      const ssdRes = await this.sys
-        .powershell(
-          `$disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+      if (cfg.collectSmart) {
+        const ssdRes = await this.sys
+          .powershell(
+            `$disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
   $rel = $_ | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
   [PSCustomObject]@{
     Model = $_.FriendlyName
@@ -176,10 +264,15 @@ export class HealthMonitor {
   }
 }
 if ($disks) { $disks | ConvertTo-Json -Compress }`,
-          { mutating: false, timeoutMs: 20_000 },
-        )
-        .catch(() => null);
-      this.ssd = ssdRes && ssdRes.code === 0 ? parseSsdJson(ssdRes.stdout) : [];
+            { mutating: false, timeoutMs: 20_000 },
+          )
+          .catch(() => null);
+        const current = normalizeHealthSettings(this.getSettings());
+        if (!current.enabled) return;
+        this.ssd = current.collectSmart && ssdRes && ssdRes.code === 0 ? parseSsdJson(ssdRes.stdout) : [];
+      } else {
+        this.ssd = [];
+      }
       this.commit();
     } finally {
       this.slowBusy = false;

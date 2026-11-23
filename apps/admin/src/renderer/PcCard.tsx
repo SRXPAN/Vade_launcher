@@ -1,4 +1,26 @@
-import { Activity, CircleStop, Clock, Ellipsis, LogOut, Moon, PackageOpen, Pencil, Play, Power, PowerOff, RotateCcw, ScrollText, Snowflake, TimerOff, User } from 'lucide-react';
+import {
+  Activity,
+  CircleStop,
+  Clock,
+  Ellipsis,
+  LogOut,
+  MessageSquare,
+  Monitor,
+  Moon,
+  PackageOpen,
+  Pencil,
+  Play,
+  Power,
+  PowerOff,
+  RotateCcw,
+  RotateCw,
+  ScrollText,
+  Snowflake,
+  StickyNote,
+  TimerOff,
+  User,
+  Wrench,
+} from 'lucide-react';
 import { memo, type ReactNode } from 'react';
 import {
   AFTER_ACTION_TITLES,
@@ -14,6 +36,7 @@ import {
   type AlertSettings,
   type PcRecord,
   type PcRuntime,
+  type RestartLauncherApp,
 } from '@vade/protocol';
 import type { PcAction } from '../shared/api';
 import { fmtAgo, fmtBytes, fmtDateTime, fmtTime, occupancyOf, occupancyText, RESULT_LABEL } from './format';
@@ -36,12 +59,39 @@ interface Props {
   onDiag: (id: number) => void;
   onEdit: (pc: PcRecord) => void;
   onUpdateAgent: (ids: number[]) => void;
+  onToggleRepair?: (pc: PcRecord) => void;
+  onEditNote?: (pc: PcRecord) => void;
+  onNotify?: (pc: PcRecord) => void;
+  onRestoreHz?: (pc: PcRecord) => void;
+  onRestartLauncher?: (pc: PcRecord, app: RestartLauncherApp) => void;
+  targetHz?: number;
 }
 
 const POWER_LABEL = { ...AFTER_ACTION_TITLES, restart: 'Перезавантаження' } as const;
 
-function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, runState, onToggle, onAction, onLogs, onDiag, onEdit, onUpdateAgent }: Props) {
+function PcCardImpl({
+  pc,
+  rt,
+  selected,
+  runTime,
+  alerts,
+  latestAgentVersion,
+  runState,
+  onToggle,
+  onAction,
+  onLogs,
+  onDiag,
+  onEdit,
+  onUpdateAgent,
+  onToggleRepair,
+  onEditNote,
+  onNotify,
+  onRestoreHz,
+  onRestartLauncher,
+  targetHz,
+}: Props) {
   const { t } = useI18n();
+  const tr = (k: string, p?: Record<string, string | number>) => t(k as never, p);
   const status = deriveDisplayStatus(rt);
   const occ = occupancyOf(rt);
   const online = rt?.link === 'online';
@@ -61,8 +111,15 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
   const drifted = online && isClockDrifted(st?.agentTimeMs);
   const worstSsdWear = health?.ssd.reduce<number | null>((acc, d) => (d.wearPct != null && (acc == null || d.wearPct > acc) ? d.wearPct : acc), null) ?? null;
 
+  const hasNoteText = Boolean(pc.serviceNote?.text?.trim());
+  const outOfService = Boolean(pc.serviceNote?.outOfService);
+
   return (
-    <div className={`card ${selected ? 'selected' : ''}`} onClick={() => onToggle(pc.id)} onDoubleClick={() => onLogs(pc.id)}>
+    <div
+      className={`card ${selected ? 'selected' : ''}${outOfService ? ' out-of-service' : ''}`}
+      onClick={() => onToggle(pc.id)}
+      onDoubleClick={() => onLogs(pc.id)}
+    >
       <div className="card-head">
         <CheckBox state={selected ? 'on' : 'off'} />
         <span className="card-num">{pc.id}</span>
@@ -88,6 +145,55 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
           </span>
         )}
       </div>
+      {(outOfService || hasNoteText) && (
+        <div className="pc-service-strip" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {outOfService && (
+            <span
+              className="repair-badge"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                alignSelf: 'flex-start',
+                padding: '2px 7px',
+                borderRadius: 5,
+                fontSize: 11,
+                fontWeight: 700,
+                color: 'var(--occ)',
+                background: 'var(--occ-soft)',
+                border: '1px solid color-mix(in srgb, var(--occ) 40%, transparent)',
+              }}
+            >
+              <Wrench size={11} />
+              {tr('note.repairBadge')}
+            </span>
+          )}
+          {hasNoteText && (
+            <div
+              className="note-chip"
+              title={pc.serviceNote?.author ? `${pc.serviceNote.text.trim()} — ${pc.serviceNote.author}` : pc.serviceNote?.text.trim()}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 5,
+                padding: '4px 7px',
+                borderRadius: 6,
+                fontSize: 11.5,
+                color: 'var(--warn)',
+                background: 'var(--warn-soft)',
+                border: '1px solid color-mix(in srgb, var(--warn) 35%, transparent)',
+                wordBreak: 'break-word',
+              }}
+            >
+              <StickyNote size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+              <span>
+                {pc.serviceNote?.text.trim()}
+                {pc.serviceNote?.author ? <span className="dim"> · {pc.serviceNote.author}</span> : null}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
       <dl className="kv">
         <dt>IP</dt>
         <dd>{pc.ip}</dd>
@@ -218,6 +324,21 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
                 {icon} {label}
               </button>
             );
+            const fnItem = (label: string, icon: ReactNode, fn: () => void, requireOnline = true) => {
+              const disabled = requireOnline && !online;
+              return (
+                <button
+                  disabled={disabled}
+                  style={disabled ? { opacity: 0.4 } : undefined}
+                  onClick={() => {
+                    close();
+                    if (!disabled) fn();
+                  }}
+                >
+                  {icon} {label}
+                </button>
+              );
+            };
             return (
               <>
                 {item('sleep', t('action.sleep'), <Moon size={15} />)}
@@ -228,27 +349,26 @@ function PcCardImpl({ pc, rt, selected, runTime, alerts, latestAgentVersion, run
                 {item('cancel', t('action.cancel'), <CircleStop size={15} />)}
                 {item('cancel-power', t('action.cancelPower'), <TimerOff size={15} />)}
                 {item('sync-time', t('action.syncTime'), <Clock size={15} />)}
-                <button
-                  disabled={!online}
-                  style={!online ? { opacity: 0.4 } : undefined}
-                  onClick={() => {
-                    close();
-                    if (online) onDiag(pc.id);
-                  }}
-                >
-                  <Activity size={15} /> {t('pcs.quickDiag')}
-                </button>
+                {fnItem(t('pcs.quickDiag'), <Activity size={15} />, () => onDiag(pc.id))}
+                {(onNotify || onRestoreHz || onRestartLauncher) && (
+                  <>
+                    <hr />
+                    {onNotify && fnItem(tr('diag.notifyAction'), <MessageSquare size={15} />, () => onNotify(pc))}
+                    {onRestoreHz && fnItem(tr('diag.restoreHzAction', { hz: targetHz ?? 240 }), <Monitor size={15} />, () => onRestoreHz(pc))}
+                    {onRestartLauncher && fnItem(tr('diag.restartSteam'), <RotateCw size={15} />, () => onRestartLauncher(pc, 'steam'))}
+                    {onRestartLauncher && fnItem(tr('diag.restartRiot'), <RotateCw size={15} />, () => onRestartLauncher(pc, 'riot'))}
+                  </>
+                )}
+                {(onToggleRepair || onEditNote) && (
+                  <>
+                    <hr />
+                    {onToggleRepair &&
+                      fnItem(outOfService ? tr('note.clearRepair') : tr('note.markRepair'), <Wrench size={15} />, () => onToggleRepair(pc), false)}
+                    {onEditNote && fnItem(pc.serviceNote ? tr('note.editNote') : tr('note.addNote'), <StickyNote size={15} />, () => onEditNote(pc), false)}
+                  </>
+                )}
                 <hr />
-                <button
-                  disabled={!online}
-                  style={!online ? { opacity: 0.4 } : undefined}
-                  onClick={() => {
-                    close();
-                    if (online) onUpdateAgent([pc.id]);
-                  }}
-                >
-                  <PackageOpen size={15} /> {t('pcs.updateAgentAction')}
-                </button>
+                {fnItem(t('pcs.updateAgentAction'), <PackageOpen size={15} />, () => onUpdateAgent([pc.id]))}
               </>
             );
           }}

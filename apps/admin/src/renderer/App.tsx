@@ -20,6 +20,7 @@ import { GamesView } from './GamesView';
 import { HistoryView } from './HistoryView';
 import { I18nProvider, useI18n } from './i18n';
 import { PcsView } from './PcsView';
+import { RoleControls, RoleProvider } from './role';
 import { ScheduleView } from './ScheduleView';
 import { SettingsView } from './SettingsView';
 import { SiteView } from './SiteView';
@@ -126,6 +127,7 @@ function AppShell(props: {
             </span>
           ))}
         </div>
+        <RoleControls />
         <button
           type="button"
           className="icon-btn theme-btn"
@@ -152,7 +154,17 @@ function AppShell(props: {
         {tab === 'schedule' && <ScheduleView settings={settings} onSaved={setSettings} pcs={pcs} setPcs={setPcs} />}
         {tab === 'history' && <HistoryView pcs={pcs} />}
         {tab === 'site' && <SiteView settings={settings} onSaved={setSettings} pcs={pcs} runtimes={runtimes} />}
-        {tab === 'settings' && <SettingsView settings={settings} onSaved={setSettings} info={info} />}
+        {tab === 'settings' && (
+          <SettingsView
+            settings={settings}
+            onSaved={setSettings}
+            onRestored={(res) => {
+              if (res.settings) setSettings(res.settings);
+              if (res.pcs) setPcs(res.pcs);
+            }}
+            info={info}
+          />
+        )}
       </main>
     </div>
   );
@@ -179,7 +191,7 @@ export function App() {
     const next: AppSettings = { ...settings, ui: { ...settings.ui, theme: nextTheme } };
     setSettings(next);
     try {
-      setSettings(await api.saveSettings(next));
+      setSettings(await api.setTheme(nextTheme));
     } catch {
       setSettings(settings);
     }
@@ -206,16 +218,18 @@ export function App() {
   return (
     <I18nProvider lang={settings.ui.language ?? 'uk'}>
       <ToastProvider>
-        <AppShell
-          settings={settings}
-          setSettings={setSettings}
-          pcs={pcs}
-          setPcs={setPcs}
-          runtimes={runtimes}
-          info={info}
-          resolvedTheme={resolvedTheme}
-          toggleTheme={toggleTheme}
-        />
+        <RoleProvider>
+          <AppShell
+            settings={settings}
+            setSettings={setSettings}
+            pcs={pcs}
+            setPcs={setPcs}
+            runtimes={runtimes}
+            info={info}
+            resolvedTheme={resolvedTheme}
+            toggleTheme={toggleTheme}
+          />
+        </RoleProvider>
       </ToastProvider>
     </I18nProvider>
   );

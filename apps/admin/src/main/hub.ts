@@ -12,6 +12,7 @@ import {
   type DeployFileResult,
   type DiagActionResult,
   type DiagBundleResult,
+  type DiagNotifyArgs,
   type DiagProcess,
   type DiagScreenshotResult,
   type GamesInstallResult,
@@ -22,6 +23,7 @@ import {
   type PcRecord,
   type PcRuntime,
   type PowerAction,
+  type RestartLauncherApp,
 } from '@vade/protocol';
 import type { ActionOptions, ActionResult, LogBatch, PcAction, PcGamesResult, SteamLoginReply, SteamLoginRequest, UiLogLine } from '../shared/api';
 import { AgentLink } from './agentLink';
@@ -324,6 +326,18 @@ export class AgentHub extends EventEmitter<HubEvents> {
 
   diagScreenshot(pcId: number): Promise<DiagScreenshotResult> {
     return this.onlineLink(pcId).request('diag.screenshot', {}, 25_000);
+  }
+
+  diagNotify(pcId: number, args: DiagNotifyArgs): Promise<DiagActionResult> {
+    return this.onlineLink(pcId).request('diag.notify', args, 15_000);
+  }
+
+  diagRestoreRefreshRate(pcId: number, targetHz: number): Promise<DiagActionResult> {
+    return this.onlineLink(pcId).request('diag.restoreRefreshRate', { targetHz }, 20_000);
+  }
+
+  diagRestartLauncher(pcId: number, app: RestartLauncherApp): Promise<DiagActionResult> {
+    return this.onlineLink(pcId).request('diag.restartLauncher', { app }, 25_000);
   }
 
   collectDiagBundle(pcId: number): Promise<DiagBundleResult> {

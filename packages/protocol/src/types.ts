@@ -117,6 +117,8 @@ export interface SecuritySettings {
   clubKey: string;
   /** Optional salted SHA-256 hash of Admin PIN ("<saltHex>:<hashHex>"); empty/omitted = disabled */
   pinHash?: string;
+  /** How long Owner mode stays unlocked after PIN entry (minutes, default 20) */
+  ownerSessionMin: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -268,6 +270,81 @@ export interface SitePayload {
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type AppLanguage = 'uk' | 'pl' | 'en';
 
+export type AdminRole = 'operator' | 'owner';
+
+export type AuditAction =
+  | 'pc.wol'
+  | 'pc.shutdown'
+  | 'pc.restart'
+  | 'pc.sleep'
+  | 'pc.hibernate'
+  | 'pc.cancel_power'
+  | 'pc.maintenance'
+  | 'pc.maintenance_cancel'
+  | 'pc.clean'
+  | 'pc.sync_time'
+  | 'pc.steam_login'
+  | 'pc.save'
+  | 'pc.delete'
+  | 'pc.repair_set'
+  | 'pc.repair_clear'
+  | 'pc.note_set'
+  | 'diag.kill'
+  | 'diag.restart_explorer'
+  | 'diag.screenshot'
+  | 'diag.notify'
+  | 'diag.restore_hz'
+  | 'diag.restart_launcher'
+  | 'deploy.exec'
+  | 'deploy.file'
+  | 'agent.update'
+  | 'queue.start'
+  | 'queue.cancel'
+  | 'settings.save'
+  | 'settings.regen_key'
+  | 'settings.pin_change'
+  | 'map.save'
+  | 'backup.export'
+  | 'backup.import'
+  | 'shift.open'
+  | 'shift.close'
+  | 'role.unlock'
+  | 'role.lock'
+  | 'games.install'
+  | 'games.uninstall'
+  | (string & {});
+
+export interface AuditEntry {
+  id: string;
+  ts: string;
+  role: AdminRole;
+  operatorName?: string;
+  action: AuditAction;
+  targets: string[];
+  details?: string;
+}
+
+export interface PcServiceNote {
+  outOfService: boolean;
+  text: string;
+  updatedAt: number;
+  author?: string;
+}
+
+export interface BackupSettings {
+  autoEnabled: boolean;
+  dir: string;
+  keepCount: number;
+  lastAutoBackupAt?: string;
+}
+
+export interface HealthTelemetrySettings {
+  enabled: boolean;
+  pollIntervalSec: number;
+  collectTemps: boolean;
+  collectSmart: boolean;
+}
+
 /** Admin app behaviour (not sent to agents). */
 export interface UiSettings {
   /** Start the admin app with Windows (needed for night Wake-on-LAN) */
@@ -292,7 +369,9 @@ export interface AppSettings {
   detector: DetectorSettings;
   postSessionClean: PostSessionCleanSettings;
   alerts: AlertSettings;
+  health: HealthTelemetrySettings;
   security: SecuritySettings;
+  backup: BackupSettings;
   site: SiteSettings;
   ui: UiSettings;
 }
@@ -315,6 +394,7 @@ export interface PcRecord {
   zone: Zone;
   name?: string;
   overrides?: PcOverrides;
+  serviceNote?: PcServiceNote;
 }
 
 /* ------------------------------------------------------------------ */
@@ -338,6 +418,7 @@ export interface AgentConfigPayload {
   schedule: AgentSchedule;
   detector: DetectorSettings;
   postSessionClean: PostSessionCleanSettings;
+  health?: HealthTelemetrySettings;
 }
 
 /* ------------------------------------------------------------------ */
@@ -570,6 +651,22 @@ export interface DiagBundleResult {
   agentLog: string;
   steamcmdLast: string;
   systemInfo: Record<string, unknown>;
+}
+
+export type RestartLauncherApp = 'steam' | 'riot';
+
+export interface DiagNotifyArgs {
+  title: string;
+  message: string;
+  timeoutSec?: number;
+}
+
+export interface DiagRestoreRefreshRateArgs {
+  targetHz: number;
+}
+
+export interface DiagRestartLauncherArgs {
+  app: RestartLauncherApp;
 }
 
 /* ------------------------------------------------------------------ */

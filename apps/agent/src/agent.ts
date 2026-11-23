@@ -6,6 +6,7 @@ import {
   AFTER_ACTION_TITLES,
   DEFAULT_CLEAN_LAUNCHERS,
   DEFAULT_DETECTOR,
+  DEFAULT_HEALTH_TELEMETRY,
   DEFAULT_POST_SESSION_CLEAN,
   ERR_BUSY,
   ERR_NOT_SERVICE,
@@ -23,10 +24,13 @@ import {
   type DetectorSettings,
   type DiagActionResult,
   type DiagBundleResult,
+  type DiagNotifyArgs,
   type DiagProcess,
+  type DiagRestartLauncherArgs,
   type DiagScreenshotResult,
   type GamesInstallResult,
   type GamesUninstallResult,
+  type HealthTelemetrySettings,
   type InstalledSteamGame,
   type JobMode,
   type PendingPower,
@@ -52,6 +56,9 @@ import {
   killProcessSafe,
   listUserProcesses,
   restartUserExplorer,
+  restartUserLauncher,
+  restoreMonitorRefreshRate,
+  sendUserMessage,
 } from './win/diagnostics';
 import { DiskMonitor } from './win/disks';
 import { HealthMonitor } from './win/health';
@@ -98,6 +105,18 @@ export function effectivePostSession(cfg: AgentConfigPayload | null): PostSessio
   };
 }
 
+export function effectiveHealth(cfg: AgentConfigPayload | null): HealthTelemetrySettings {
+  const h = cfg?.health;
+  const merged = !h || typeof h !== 'object' ? { ...DEFAULT_HEALTH_TELEMETRY } : { ...DEFAULT_HEALTH_TELEMETRY, ...h };
+  const rawSec = Number.isFinite(merged.pollIntervalSec) ? Math.round(merged.pollIntervalSec) : DEFAULT_HEALTH_TELEMETRY.pollIntervalSec;
+  return {
+    enabled: merged.enabled !== false,
+    pollIntervalSec: Math.max(30, Math.min(600, rawSec)),
+    collectTemps: merged.collectTemps !== false,
+    collectSmart: merged.collectSmart !== false,
+  };
+}
+
 /** Validates a config pushed by the admin app; returns an error text or null. */
 export function validateConfigPayload(p: unknown): string | null {
   const c = p as AgentConfigPayload;
@@ -134,6 +153,16 @@ export function validateConfigPayload(p: unknown): string | null {
     const okBrowsers = Array.isArray(p?.browsers) && p.browsers.every((b) => ['chrome', 'edge', 'opera', 'firefox'].includes(b));
     if (!p || !Array.isArray(p.closeApps) || !p.closeApps.every((x) => typeof x === 'string') || !okBrowsers) return 'postSessionClean';
     if (typeof p.delaySec !== 'number' || p.delaySec < 0) return 'postSessionClean.delaySec';
+  }
+  if (c.health !== undefined) {
+    const h = c.health;
+    if (!h || typeof h !== 'object' || Array.isArray(h)) return 'health';
+    for (const flag of ['enabled', 'collectTemps', 'collectSmart'] as const) {
+      if (h[flag] !== undefined && typeof h[flag] !== 'boolean') return `health.${flag}`;
+    }
+    if (typeof h.pollIntervalSec !== 'number' || !Number.isFinite(h.pollIntervalSec) || h.pollIntervalSec < 30 || h.pollIntervalSec > 600) {
+      return 'health.pollIntervalSec';
+    }
   }
   return null;
 }
@@ -223,7 +252,7 @@ export class Agent extends EventEmitter {
       onTransition: (prev, next) => this.postSession.onTransition(prev, next),
     });
     this.disks = new DiskMonitor(d.sys, () => this.changed());
-    this.health = new HealthMonitor(d.sys, () => this.changed());
+    this.health = new HealthMonitor(d.sys, () => this.changed(), () => effectiveHealth(d.store.state.config));
     d.log.on('line', (line) => this.emit('log', line));
   }
 
@@ -327,6 +356,7 @@ export class Agent extends EventEmitter {
       prev.schedule.enabled !== s.enabled ||
       prev.schedule.runTime !== s.runTime ||
       prev.schedule.wakeLeadMin !== s.wakeLeadMin;
+    const healthChanged = JSON.stringify(prev?.health) !== JSON.stringify(p.health);
     this.d.store.state.config = p;
     if (scheduleChanged) {
       // A slot that is already in the past today must not fire right now.
@@ -338,6 +368,7 @@ export class Agent extends EventEmitter {
       `Отримано налаштування (rev ${p.rev}): ПК №${p.pcId}, розклад ${s.enabled ? s.runTime : 'вимкнено'}, після — ${AFTER_ACTION_TITLES[p.maintenance.after.action]}`,
     );
     if (scheduleChanged) await syncWakeTask(this.d.sys, this.d.log, s);
+    if (healthChanged) this.health.reconfigure();
     this.changed();
     return { changed: true, nextRunAt: this.scheduler.nextRunAt() };
   }
@@ -589,6 +620,27 @@ export class Agent extends EventEmitter {
       info: this.info(),
       status: this.status(),
     });
+  }
+
+  diagNotify(args: DiagNotifyArgs): Promise<DiagActionResult> {
+    return sendUserMessage(this.d.sys, this.d.log, args);
+  }
+
+  async diagRestoreRefreshRate(targetHz: number): Promise<DiagActionResult> {
+    const res = await restoreMonitorRefreshRate(this.d.sys, this.d.log, this.presence.dir, targetHz);
+    if (res.ok) void this.health.tickFast();
+    return res;
+  }
+
+  diagRestartLauncher(args: DiagRestartLauncherArgs): Promise<DiagActionResult> {
+    const m = this.d.store.state.config?.maintenance;
+    return restartUserLauncher(
+      this.d.sys,
+      this.d.log,
+      args,
+      m?.steamPath ?? 'C:\\Program Files (x86)\\Steam',
+      m?.extraUpdaters?.apps,
+    );
   }
 
   deployExec(args: DeployExecArgs): Promise<DeployExecResult> {

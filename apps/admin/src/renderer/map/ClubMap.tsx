@@ -47,7 +47,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
-import { compareVersions, type AppSettings, type PcRecord, type PcRuntime } from '@vade/protocol';
+import { compareVersions, resolveHealthThresholds, type AppSettings, type PcRecord, type PcRuntime, type RestartLauncherApp } from '@vade/protocol';
 import type { PcAction } from '../../shared/api';
 import {
   defaultMapLayout,
@@ -127,6 +127,12 @@ interface Props {
   onAddPc: (id: number, zone: string, onCreated?: (pc: PcRecord) => void) => void;
   onSteamLogin: (ids: number[]) => void;
   onUpdateAgent: (ids: number[]) => void;
+  onBeforeEdit?: (proceed: () => void) => void;
+  onToggleRepair?: (pc: PcRecord) => void;
+  onEditNote?: (pc: PcRecord) => void;
+  onNotify?: (pc: PcRecord) => void;
+  onRestoreHz?: (pc: PcRecord) => void;
+  onRestartLauncher?: (pc: PcRecord, app: RestartLauncherApp) => void;
 }
 
 type Tool = 'move' | 'wall' | 'erase';
@@ -581,7 +587,7 @@ export function ClubMap(props: Props) {
     };
   }, [editing, undo, redo, rotateSelected, deleteSelected, commit]);
 
-  const startEdit = () => {
+  const enterEdit = () => {
     if (!saved) return;
     draftRef.current = saved;
     histRef.current = { past: [], future: [] };
@@ -595,6 +601,12 @@ export function ClubMap(props: Props) {
     setHover(null);
     autoFit.current = true;
     setEditing(true);
+  };
+
+  const startEdit = () => {
+    if (!saved) return;
+    if (props.onBeforeEdit) props.onBeforeEdit(enterEdit);
+    else enterEdit();
   };
 
   const stopEdit = () => {
@@ -1079,6 +1091,8 @@ export function ClubMap(props: Props) {
       tone: mapTone(rt, !!pc),
       disk: pc ? pcAlertLevel(rt, settings.alerts, pc.zone) : ('ok' as const),
       progress: pc ? jobProgress(rt) : null,
+      outOfService: Boolean(pc?.serviceNote?.outOfService),
+      hasNote: Boolean(pc?.serviceNote?.text?.trim()),
     };
   };
 
@@ -1504,6 +1518,9 @@ export function ClubMap(props: Props) {
             <span className="lg-item">
               <i className="lg-dot" /> Диск / Залізо / Час
             </span>
+            <span className="lg-item">
+              <i className="lg-repair" /> На ремонті
+            </span>
           </div>
           <div className="map-overlay map-zoom">
             <button className="icon-btn" title="Збільшити" onClick={() => zoomAt(1.25, size.w / 2, size.h / 2)}>
@@ -1561,6 +1578,15 @@ export function ClubMap(props: Props) {
             onToggleSelect={(id) => props.onSelect([id], 'toggle')}
             onAdd={(id) => createPcOnSlot(id, false)}
             onBindSlot={(slotId) => setDialog({ kind: 'bind-slot', slotId, inEdit: false })}
+            onToggleRepair={props.onToggleRepair}
+            onEditNote={props.onEditNote}
+            onNotify={props.onNotify}
+            onRestoreHz={props.onRestoreHz}
+            onRestartLauncher={props.onRestartLauncher}
+            targetHz={(() => {
+              const mPc = byId.get(menu);
+              return mPc ? resolveHealthThresholds(settings.alerts, mPc.zone).minRefreshRateHz || 240 : 240;
+            })()}
           />
         </Floating>
       )}

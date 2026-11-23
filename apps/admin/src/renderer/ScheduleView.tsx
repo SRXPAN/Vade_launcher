@@ -19,6 +19,7 @@ import { api, errorText } from './api';
 import { AppIdsInput } from './AppIdsInput';
 import { NameListInput } from './NameListInput';
 import { useI18n } from './i18n';
+import { useRole } from './role';
 import { SaveBar } from './SaveBar';
 import { Option, Segmented, Switch, useToast } from './ui';
 import { useDraft } from './useDraft';
@@ -33,22 +34,25 @@ interface Props {
 export function ScheduleView({ settings, onSaved, pcs, setPcs }: Props) {
   const { t } = useI18n();
   const toast = useToast();
+  const { requireOwner } = useRole();
   const { draft, update, dirty, reset, save, error, saving } = useDraft(settings, onSaved);
   const s = draft.schedule;
   const m = draft.maintenance;
   const dt = draft.detector;
 
-  const togglePcSchedule = async (pc: PcRecord, on: boolean) => {
-    const overrides = { ...pc.overrides };
-    if (on) delete overrides.scheduleEnabled;
-    else overrides.scheduleEnabled = false;
-    try {
-      const r = await api.savePc({ ...pc, overrides }, pc.id);
-      if (r.ok) setPcs(r.pcs);
-      else toast('error', r.errors.join('\n'));
-    } catch (e) {
-      toast('error', errorText(e));
-    }
+  const togglePcSchedule = (pc: PcRecord, on: boolean) => {
+    requireOwner(t('nav.schedule'), () => {
+      const overrides = { ...pc.overrides };
+      if (on) delete overrides.scheduleEnabled;
+      else overrides.scheduleEnabled = false;
+      void api
+        .savePc({ ...pc, overrides }, pc.id)
+        .then((r) => {
+          if (r.ok) setPcs(r.pcs);
+          else toast('error', r.errors.join('\n'));
+        })
+        .catch((e) => toast('error', errorText(e)));
+    });
   };
 
   const scheduledCount = pcs.filter((p) => isPcScheduled(draft, p)).length;

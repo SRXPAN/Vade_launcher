@@ -4,7 +4,7 @@
  */
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { deflateRawSync } from 'node:zlib';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 export interface ZipEntry {
   name: string;
@@ -132,4 +132,147 @@ export async function writeZipFile(destPath: string, entries: ZipEntry[]): Promi
   await fsp.writeFile(tmp, buf);
   await fsp.rename(tmp, destPath);
   return buf.length;
+}
+
+const DRIVE_PREFIX_RE = /^[A-Za-z]:/;
+
+/**
+ * Normalizes a ZIP entry path and rejects path traversal, drive letters, leading slashes, or empty names.
+ */
+function sanitizeZipEntryName(rawName: string): { name: string; isDir: boolean } {
+  if (!rawName || rawName.includes('\0')) {
+    throw new Error('Unsafe ZIP entry: empty or contains null byte');
+  }
+  const normalized = rawName.replace(/\\/g, '/');
+  if (!normalized || normalized.startsWith('/') || DRIVE_PREFIX_RE.test(normalized)) {
+    throw new Error(`Unsafe ZIP entry path: ${rawName}`);
+  }
+  const isDir = normalized.endsWith('/');
+  const trimmed = isDir ? normalized.slice(0, -1) : normalized;
+  if (!trimmed) {
+    throw new Error(`Unsafe ZIP entry path: ${rawName}`);
+  }
+  const segments = trimmed.split('/');
+  for (const seg of segments) {
+    if (!seg || seg === '.' || seg === '..' || DRIVE_PREFIX_RE.test(seg)) {
+      throw new Error(`Unsafe ZIP entry path: ${rawName}`);
+    }
+  }
+  return { name: trimmed, isDir };
+}
+
+function findEocdOffset(buf: Buffer): number {
+  if (buf.length < 22) {
+    throw new Error('Invalid ZIP archive: file too small');
+  }
+  const minOffset = Math.max(0, buf.length - 65557);
+  for (let i = buf.length - 22; i >= minOffset; i--) {
+    if (buf.readUInt32LE(i) !== 0x06054b50) continue;
+    const commentLen = buf.readUInt16LE(i + 20);
+    if (i + 22 + commentLen === buf.length) return i;
+  }
+  throw new Error('Invalid ZIP archive: End of Central Directory not found');
+}
+
+/**
+ * Pure-Node ZIP archive reader supporting STORE (method 0) and DEFLATE (method 8).
+ * Validates path safety, CRC32 checksums, and uncompressed sizes before returning entries.
+ */
+export function readZipBuffer(buf: Buffer): Map<string, Buffer> {
+  const eocdOffset = findEocdOffset(buf);
+  const diskNum = buf.readUInt16LE(eocdOffset + 4);
+  const cdDisk = buf.readUInt16LE(eocdOffset + 6);
+  const diskEntries = buf.readUInt16LE(eocdOffset + 8);
+  const totalEntries = buf.readUInt16LE(eocdOffset + 10);
+  const cdSize = buf.readUInt32LE(eocdOffset + 12);
+  const cdOffset = buf.readUInt32LE(eocdOffset + 16);
+
+  if (diskNum !== 0 || cdDisk !== 0 || diskEntries !== totalEntries) {
+    throw new Error('Multi-disk ZIP archives are not supported');
+  }
+  if (totalEntries === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
+    throw new Error('ZIP64 archives are not supported');
+  }
+  const cdEnd = cdOffset + cdSize;
+  if (cdEnd > eocdOffset) {
+    throw new Error('Invalid ZIP archive: Central Directory exceeds bounds');
+  }
+
+  const out = new Map<string, Buffer>();
+  let pos = cdOffset;
+
+  for (let i = 0; i < totalEntries; i++) {
+    if (pos + 46 > cdEnd || buf.readUInt32LE(pos) !== 0x02014b50) {
+      throw new Error('Invalid ZIP archive: corrupt Central Directory header');
+    }
+    const flags = buf.readUInt16LE(pos + 8);
+    const method = buf.readUInt16LE(pos + 10);
+    const expectedCrc = buf.readUInt32LE(pos + 16);
+    const compressedSize = buf.readUInt32LE(pos + 20);
+    const uncompressedSize = buf.readUInt32LE(pos + 24);
+    const nameLen = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commentLen = buf.readUInt16LE(pos + 32);
+    const localHeaderOffset = buf.readUInt32LE(pos + 42);
+
+    const nextPos = pos + 46 + nameLen + extraLen + commentLen;
+    if (nextPos > cdEnd) {
+      throw new Error('Invalid ZIP archive: Central Directory entry exceeds bounds');
+    }
+    if ((flags & 0x0001) !== 0) {
+      throw new Error('Encrypted ZIP entries are not supported');
+    }
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localHeaderOffset === 0xffffffff) {
+      throw new Error('ZIP64 entries are not supported');
+    }
+
+    const rawName = buf.subarray(pos + 46, pos + 46 + nameLen).toString('utf8');
+    pos = nextPos;
+
+    const { name, isDir } = sanitizeZipEntryName(rawName);
+    if (isDir) {
+      if (uncompressedSize !== 0 || compressedSize !== 0) {
+        throw new Error(`Invalid ZIP directory entry with non-zero size: ${rawName}`);
+      }
+      continue;
+    }
+
+    if (localHeaderOffset + 30 > cdOffset || buf.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
+      throw new Error(`Invalid ZIP archive: corrupt Local File Header for ${name}`);
+    }
+    const localNameLen = buf.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLen = buf.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
+    const dataEnd = dataStart + compressedSize;
+    if (dataStart > cdOffset || dataEnd > cdOffset) {
+      throw new Error(`Invalid ZIP archive: entry data out of bounds for ${name}`);
+    }
+
+    const slice = buf.subarray(dataStart, dataEnd);
+    let data: Buffer;
+    if (method === 0) {
+      data = Buffer.from(slice);
+    } else if (method === 8) {
+      data = inflateRawSync(slice);
+    } else {
+      throw new Error(`Unsupported ZIP compression method ${method} for ${name}`);
+    }
+
+    if (data.length !== uncompressedSize) {
+      throw new Error(`ZIP size mismatch for ${name}: expected ${uncompressedSize}, got ${data.length}`);
+    }
+    if (crc32(data) !== expectedCrc) {
+      throw new Error(`ZIP CRC32 mismatch for ${name}`);
+    }
+
+    out.set(name, data);
+  }
+
+  return out;
+}
+
+/** Reads and validates all entries from a ZIP file on disk. */
+export async function readZipFile(filePath: string): Promise<Map<string, Buffer>> {
+  const buf = await fsp.readFile(filePath);
+  return readZipBuffer(buf);
 }

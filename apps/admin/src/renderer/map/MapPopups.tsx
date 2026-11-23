@@ -7,6 +7,8 @@ import {
   KeyRound,
   Link2,
   ListChecks,
+  MessageSquare,
+  Monitor,
   Moon,
   PackageOpen,
   Pencil,
@@ -17,9 +19,11 @@ import {
   RotateCw,
   ScrollText,
   Snowflake,
+  StickyNote,
   TimerOff,
   Trash2,
   Unlink,
+  Wrench,
   Zap,
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
@@ -36,6 +40,7 @@ import {
   type AppSettings,
   type PcRecord,
   type PcRuntime,
+  type RestartLauncherApp,
 } from '@vade/protocol';
 import type { PcAction } from '../../shared/api';
 import { LANDMARK_TITLES, type MapLabel, type MapLandmark, type MapZoneBox } from '../../shared/mapLayout';
@@ -97,6 +102,8 @@ interface TooltipProps {
 }
 
 export function PcTooltip({ id, pc, rt, tone, settings, runState, latestAgentVersion }: TooltipProps) {
+  const { t } = useI18n();
+  const tr = (k: string, p?: Record<string, string | number>) => t(k as never, p);
   if (!pc) {
     return (
       <>
@@ -148,6 +155,21 @@ export function PcTooltip({ id, pc, rt, tone, settings, runState, latestAgentVer
         <b>{TONE_LABEL[tone]}</b>
       </div>
       {tone === 'busy' && <div className="mt-row dim">{occupancyText(rt)}</div>}
+      {pc.serviceNote?.outOfService && (
+        <div className="mt-row mt-repair" style={{ color: 'var(--occ)', fontWeight: 600 }}>
+          <Wrench size={13} style={{ flexShrink: 0 }} />
+          <span>{tr('note.repairBadge')}</span>
+        </div>
+      )}
+      {pc.serviceNote?.text?.trim() && (
+        <div className="mt-row mt-note" style={{ color: 'var(--warn)', flexWrap: 'nowrap', alignItems: 'flex-start' }}>
+          <StickyNote size={13} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span>
+            {pc.serviceNote.text.trim()}
+            {pc.serviceNote.author ? <span className="dim"> · {pc.serviceNote.author}</span> : null}
+          </span>
+        </div>
+      )}
       {st?.disks && st.disks.length > 0 && (
         <div className="mt-row mt-disks">
           {st.disks.map((d, i) => (
@@ -225,10 +247,17 @@ interface MenuProps {
   onToggleSelect: (id: number) => void;
   onAdd: (id: number) => void;
   onBindSlot: (slotId: number) => void;
+  onToggleRepair?: (pc: PcRecord) => void;
+  onEditNote?: (pc: PcRecord) => void;
+  onNotify?: (pc: PcRecord) => void;
+  onRestoreHz?: (pc: PcRecord) => void;
+  onRestartLauncher?: (pc: PcRecord, app: RestartLauncherApp) => void;
+  targetHz?: number;
 }
 
 export function PcMenu(p: MenuProps) {
   const { t } = useI18n();
+  const tr = (k: string, params?: Record<string, string | number>) => t(k as never, params);
   const run = (fn: () => void) => () => {
     p.onClose();
     fn();
@@ -272,6 +301,23 @@ export function PcMenu(p: MenuProps) {
       {item(t('action.cleanLogins'), <BrushCleaning size={15} />, act('clean-logins'), { disabled: !online || busy, title: offlineHint })}
       {item(t('pcs.quickDiag'), <Activity size={15} />, run(() => p.onDiag(pc.id)), { disabled: !online, title: offlineHint })}
       {item(t('pcs.liveLog'), <ScrollText size={15} />, run(() => p.onLogs(pc.id)))}
+      {(p.onNotify || p.onRestoreHz || p.onRestartLauncher) && (
+        <>
+          <hr />
+          {p.onNotify && item(tr('diag.notifyAction'), <MessageSquare size={15} />, run(() => p.onNotify!(pc)), { disabled: !online, title: offlineHint })}
+          {p.onRestoreHz &&
+            item(tr('diag.restoreHzAction', { hz: p.targetHz ?? 240 }), <Monitor size={15} />, run(() => p.onRestoreHz!(pc)), {
+              disabled: !online,
+              title: offlineHint,
+            })}
+          {p.onRestartLauncher && (
+            <>
+              {item(tr('diag.restartSteam'), <RotateCw size={15} />, run(() => p.onRestartLauncher!(pc, 'steam')), { disabled: !online, title: offlineHint })}
+              {item(tr('diag.restartRiot'), <RotateCw size={15} />, run(() => p.onRestartLauncher!(pc, 'riot')), { disabled: !online, title: offlineHint })}
+            </>
+          )}
+        </>
+      )}
       <hr />
       {item(t('action.wake'), <Zap size={15} />, act('wake'))}
       <div className="mm-pair">
@@ -289,6 +335,14 @@ export function PcMenu(p: MenuProps) {
       {st?.pendingPower && item(t('action.cancelPower'), <TimerOff size={15} />, act('cancel-power'))}
       {online && p.outdated && item(t('pcs.updateAgentAction'), <PackageOpen size={15} />, run(() => p.onUpdateAgent([pc.id])))}
       {item(t('pcs.editPc'), <Pencil size={15} />, run(() => p.onEdit(pc)))}
+      {(p.onToggleRepair || p.onEditNote) && (
+        <>
+          <hr />
+          {p.onToggleRepair &&
+            item(pc.serviceNote?.outOfService ? tr('note.clearRepair') : tr('note.markRepair'), <Wrench size={15} />, run(() => p.onToggleRepair!(pc)))}
+          {p.onEditNote && item(pc.serviceNote ? tr('note.editNote') : tr('note.addNote'), <StickyNote size={15} />, run(() => p.onEditNote!(pc)))}
+        </>
+      )}
       <hr />
       {item(p.selected ? 'Прибрати з вибору' : 'Додати до вибору', <ListChecks size={15} />, run(() => p.onToggleSelect(pc.id)))}
     </>

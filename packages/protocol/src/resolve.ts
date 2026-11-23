@@ -1,3 +1,4 @@
+import { DEFAULT_HEALTH_TELEMETRY } from './defaults';
 import { formatHHMM, pcRunMinute } from './schedule';
 import type {
   AgentConfigPayload,
@@ -46,6 +47,7 @@ export function buildAgentConfig(settings: AppSettings, pc: PcRecord): AgentConf
     },
     detector: structuredClone(settings.detector),
     postSessionClean: structuredClone(settings.postSessionClean),
+    health: structuredClone(settings.health ?? DEFAULT_HEALTH_TELEMETRY),
   };
   return { rev: hashString(stableStringify(body)), ...body };
 }
@@ -95,7 +97,8 @@ export function deriveDisplayStatus(rt: PcRuntime | undefined): DisplayStatus {
  *                 so the site never offers a seat that may be taken
  *  - free:        the detector says nobody is there
  */
-export function publicPcStatus(rt: PcRuntime | undefined): PublicPcStatus {
+export function publicPcStatus(rt: PcRuntime | undefined, pc?: Pick<PcRecord, 'serviceNote'>): PublicPcStatus {
+  if (pc?.serviceNote?.outOfService) return 'maintenance';
   if (!rt || rt.link !== 'online' || !rt.status) return 'offline';
   const s = rt.status;
   if (s.job || s.state !== 'idle') return 'maintenance';
@@ -106,7 +109,7 @@ export function publicPcStatus(rt: PcRuntime | undefined): PublicPcStatus {
 export function buildSitePayload(pcs: PcRecord[], runtimes: (id: number) => PcRuntime | undefined, now = new Date()): SitePayload {
   return {
     updatedAt: now.toISOString(),
-    pcs: [...pcs].sort((a, b) => a.id - b.id).map((pc) => ({ id: pc.id, zone: pc.zone, status: publicPcStatus(runtimes(pc.id)) })),
+    pcs: [...pcs].sort((a, b) => a.id - b.id).map((pc) => ({ id: pc.id, zone: pc.zone, status: publicPcStatus(runtimes(pc.id), pc) })),
   };
 }
 

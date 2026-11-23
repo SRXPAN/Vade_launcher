@@ -8,8 +8,11 @@ import type {
   AgentStatus,
   DiagActionResult,
   DiagBundleResult,
+  DiagNotifyArgs,
   DiagProcess,
+  DiagRestartLauncherArgs,
   DiagScreenshotResult,
+  ExtraUpdaterApp,
   PresenceInfo,
 } from '@vade/protocol';
 import type { Logger } from '../logger';
@@ -283,6 +286,50 @@ try {
 `;
 }
 
+function isRunningAsSystem(): boolean {
+  return process.env.USERNAME?.toUpperCase() === 'SYSTEM' || !!process.env.USERPROFILE?.toLowerCase().includes('system32');
+}
+
+/**
+ * Runs a PowerShell script inside the interactive Users session via a one-shot
+ * hidden scheduled task (`conhost --headless`) and waits up to `timeoutMs` for `outPath`.
+ */
+async function runUsersPsTask(
+  sys: Sys,
+  taskName: string,
+  script: string,
+  outPath: string,
+  mutating: boolean,
+  timeoutMs = 12_000,
+): Promise<void> {
+  const taskPath = '\\VadeAgent\\';
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const taskScript = `
+$ErrorActionPreference = 'Stop'
+$ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+$args = '--headless "' + $ps + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ' + ${psQuote(encoded)}
+$action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\\conhost.exe') -Argument $args
+$principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskPath ${psQuote(taskPath)} -TaskName ${psQuote(taskName)} -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+try { Start-ScheduledTask -TaskPath ${psQuote(taskPath)} -TaskName ${psQuote(taskName)} } catch {}
+`;
+  const regRes = await sys.powershell(taskScript, { mutating, timeoutMs: 15_000 });
+  if (regRes.code !== 0) {
+    throw new Error(`Не вдалося запустити задачу ${taskName}: ${regRes.stderr.trim() || `код ${regRes.code}`}`);
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !fs.existsSync(outPath)) {
+    await sleep(250);
+  }
+  await sys
+    .powershell(
+      `Unregister-ScheduledTask -TaskPath ${psQuote(taskPath)} -TaskName ${psQuote(taskName)} -Confirm:$false -ErrorAction SilentlyContinue`,
+      { mutating, timeoutMs: 8_000 },
+    )
+    .catch(() => undefined);
+}
+
 /**
  * Captures one compressed JPEG screenshot (<=1280px, quality 60%) of the active user session.
  * When running as SYSTEM (Session 0), uses an interactive Users scheduled task just like PresenceReporter.
@@ -302,41 +349,15 @@ export async function captureUserScreenshot(
   const metaPath = path.join(presenceDir, `shot-${token}.json`);
   const shotScript = buildScreenshotScript(jpgPath, metaPath);
 
-  const isSystem = process.env.USERNAME?.toUpperCase() === 'SYSTEM' || process.env.USERPROFILE?.toLowerCase().includes('system32');
-
   log.info('Діагностика: зняття скріншоту активної сесії…');
   try {
-    if (!isSystem || sys.dryRun) {
+    if (!isRunningAsSystem() || sys.dryRun) {
       const r = await sys.powershell(shotScript, { mutating: false, timeoutMs: 15_000 });
       if (r.code !== 0 && !fs.existsSync(metaPath)) {
         throw new Error(r.stderr.trim() || `Помилка зняття скріншоту (код ${r.code})`);
       }
     } else {
-      const taskPath = '\\VadeAgent\\';
-      const taskName = 'VadeAgent Screenshot';
-      const encoded = Buffer.from(shotScript, 'utf16le').toString('base64');
-      const taskScript = `
-$ErrorActionPreference = 'Stop'
-$ps = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-$args = '--headless "' + $ps + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ' + ${psQuote(encoded)}
-$action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\\conhost.exe') -Argument $args
-$principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskPath '${taskPath}' -TaskName '${taskName}' -Action $action -Principal $principal -Settings $settings -Force | Out-Null
-try { Start-ScheduledTask -TaskPath '${taskPath}' -TaskName '${taskName}' } catch {}
-`;
-      const regRes = await sys.powershell(taskScript, { mutating: false, timeoutMs: 15_000 });
-      if (regRes.code !== 0) {
-        throw new Error(`Не вдалося запустити задачу скріншоту: ${regRes.stderr.trim() || `код ${regRes.code}`}`);
-      }
-      const deadline = Date.now() + 12_000;
-      while (Date.now() < deadline && !fs.existsSync(metaPath)) {
-        await sleep(250);
-      }
-      await sys.powershell(`Unregister-ScheduledTask -TaskPath '${taskPath}' -TaskName '${taskName}' -Confirm:$false -ErrorAction SilentlyContinue`, {
-        mutating: false,
-        timeoutMs: 8_000,
-      }).catch(() => undefined);
+      await runUsersPsTask(sys, 'VadeAgent Screenshot', shotScript, metaPath, false);
     }
 
     if (!fs.existsSync(metaPath)) {
@@ -362,6 +383,321 @@ try { Start-ScheduledTask -TaskPath '${taskPath}' -TaskName '${taskName}' } catc
     try { fs.rmSync(jpgPath, { force: true }); } catch { /* ignore */ }
     try { fs.rmSync(metaPath, { force: true }); } catch { /* ignore */ }
   }
+}
+
+/**
+ * Displays a non-blocking topmost popup notification in the active Windows user session
+ * via WTSSendMessageW (bWait = false) with msg.exe fallback.
+ */
+export async function sendUserMessage(sys: Sys, log: Logger, args: DiagNotifyArgs): Promise<DiagActionResult> {
+  const message = typeof args?.message === 'string' ? args.message.trim().slice(0, 1000) : '';
+  if (!message) {
+    throw new Error('Текст повідомлення не може бути порожнім');
+  }
+  const rawTitle = typeof args?.title === 'string' ? args.title.trim() : '';
+  const title = (rawTitle || 'Vade Launcher').slice(0, 120);
+  const rawTimeout =
+    typeof args?.timeoutSec === 'number' && Number.isFinite(args.timeoutSec) ? Math.round(args.timeoutSec) : 30;
+  const timeoutSec = Math.max(5, Math.min(300, rawTimeout));
+
+  if (sys.dryRun) {
+    log.info(`[dry-run] Діагностика: повідомлення "${title}" (${timeoutSec} с)`);
+    return { ok: true, message: `[dry-run] Повідомлення надіслано: "${title}"` };
+  }
+
+  log.info(`Діагностика: надсилання повідомлення "${title}" (${timeoutSec} с)…`);
+  const script = `
+$ErrorActionPreference = 'Stop'
+$title = ${psQuote(title)}
+$msg = ${psQuote(message)}
+$timeout = [uint32]${timeoutSec}
+$native = '
+[DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
+[DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool WTSSendMessageW(IntPtr hServer, uint SessionId, string pTitle, int TitleLength, string pMessage, int MessageLength, uint Style, uint Timeout, out uint pResponse, bool bWait);
+public static string Send(string title, string msg, uint timeout) {
+  uint sid = WTSGetActiveConsoleSessionId();
+  if (sid == 0xFFFFFFFF || sid == 0) return "NO_SESSION";
+  uint resp = 0;
+  bool ok = WTSSendMessageW(IntPtr.Zero, sid, title, title.Length * 2, msg, msg.Length * 2, 0x40040u, timeout, out resp, false);
+  if (!ok) return "ERR:" + System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+  return "OK:" + sid;
+}
+'
+Add-Type -Namespace VadeDiag -Name WtsNotifier -MemberDefinition $native
+[VadeDiag.WtsNotifier]::Send($title, $msg, $timeout)
+`;
+
+  const r = await sys.powershell(script, { mutating: true, timeoutMs: 12_000 });
+  const out = r.stdout.trim();
+  if (r.code === 0 && out.startsWith('OK:')) {
+    return { ok: true, message: `Повідомлення надіслано: "${title}"` };
+  }
+
+  if (fs.existsSync(EXE.msg)) {
+    const msgRes = await sys.mutate(EXE.msg, ['*', `/TIME:${timeoutSec}`, `${title}: ${message}`], 8_000);
+    if (msgRes.code === 0) {
+      return { ok: true, message: `Повідомлення надіслано: "${title}"` };
+    }
+    const err = msgRes.stderr.trim() || msgRes.stdout.trim() || `код ${msgRes.code}`;
+    return { ok: false, message: `Не вдалося надіслати повідомлення: ${err}` };
+  }
+
+  const detail = out === 'NO_SESSION' ? 'немає активної сесії користувача' : out || r.stderr.trim() || `код ${r.code}`;
+  return { ok: false, message: `Не вдалося надіслати повідомлення: ${detail}` };
+}
+
+function buildRefreshRateScript(resultPath: string, targetHz: number): string {
+  return `$ErrorActionPreference = 'Stop'
+$resPath = ${psQuote(resultPath)}
+$targetHz = [uint32]${targetHz}
+$native = '
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct DEVMODEW {
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+  public ushort dmSpecVersion;
+  public ushort dmDriverVersion;
+  public ushort dmSize;
+  public ushort dmDriverExtra;
+  public uint dmFields;
+  public int dmPositionX;
+  public int dmPositionY;
+  public uint dmDisplayOrientation;
+  public uint dmDisplayFixedOutput;
+  public short dmColor;
+  public short dmDuplex;
+  public short dmYResolution;
+  public short dmTTOption;
+  public short dmCollate;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+  public ushort dmLogPixels;
+  public uint dmBitsPerPel;
+  public uint dmPelsWidth;
+  public uint dmPelsHeight;
+  public uint dmDisplayFlags;
+  public uint dmDisplayFrequency;
+  public uint dmICMMethod;
+  public uint dmICMIntent;
+  public uint dmMediaType;
+  public uint dmDitherType;
+  public uint dmReserved1;
+  public uint dmReserved2;
+  public uint dmPanningWidth;
+  public uint dmPanningHeight;
+}
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplaySettingsW(string lpszDeviceName, int iModeNum, ref DEVMODEW lpDevMode);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int ChangeDisplaySettingsW(ref DEVMODEW lpDevMode, uint dwFlags);
+public static string Apply(uint targetHz) {
+  DEVMODEW cur = new DEVMODEW();
+  cur.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODEW));
+  if (!EnumDisplaySettingsW(null, -1, ref cur)) return "ERR_ENUM";
+  if (cur.dmDisplayFrequency == targetHz) return "ALREADY:" + cur.dmDisplayFrequency;
+  DEVMODEW mode = new DEVMODEW();
+  mode.dmSize = cur.dmSize;
+  DEVMODEW best = new DEVMODEW();
+  bool found = false;
+  bool foundExactBpp = false;
+  System.Collections.Generic.SortedSet<uint> avail = new System.Collections.Generic.SortedSet<uint>();
+  int i = 0;
+  while (EnumDisplaySettingsW(null, i, ref mode)) {
+    if (mode.dmPelsWidth == cur.dmPelsWidth && mode.dmPelsHeight == cur.dmPelsHeight) {
+      if (mode.dmDisplayFrequency > 0) avail.Add(mode.dmDisplayFrequency);
+      if (mode.dmDisplayFrequency == targetHz) {
+        bool sameBpp = mode.dmBitsPerPel == cur.dmBitsPerPel;
+        if (!found || (sameBpp && !foundExactBpp)) {
+          best = mode;
+          found = true;
+          foundExactBpp = sameBpp;
+        }
+      }
+    }
+    mode = new DEVMODEW();
+    mode.dmSize = cur.dmSize;
+    i++;
+  }
+  if (!found) {
+    System.Collections.Generic.List<string> list = new System.Collections.Generic.List<string>();
+    foreach (uint hz in avail) list.Add(hz.ToString());
+    return "UNSUPPORTED:" + string.Join(", ", list.ToArray());
+  }
+  best.dmFields = 0x00080000u | 0x00100000u | 0x00400000u;
+  if (best.dmBitsPerPel > 0) best.dmFields |= 0x00040000u;
+  int rc = ChangeDisplaySettingsW(ref best, 1u);
+  return "CHG:" + rc + ":" + cur.dmDisplayFrequency;
+}
+'
+try {
+  Add-Type -Namespace VadeDiag -Name DisplayHz -MemberDefinition $native
+  $raw = [VadeDiag.DisplayHz]::Apply($targetHz)
+  if ($raw.StartsWith('ALREADY:')) {
+    $obj = @{ status = 'already'; currentHz = [int]$raw.Substring(8) }
+  } elseif ($raw.StartsWith('UNSUPPORTED:')) {
+    $obj = @{ status = 'unsupported'; available = $raw.Substring(12) }
+  } elseif ($raw.StartsWith('CHG:')) {
+    $parts = $raw.Split(':')
+    $obj = @{ status = 'chg'; code = [int]$parts[1]; currentHz = [int]$parts[2] }
+  } else {
+    $obj = @{ status = 'error'; error = $raw }
+  }
+  [System.IO.File]::WriteAllText($resPath, ($obj | ConvertTo-Json -Compress), [Text.Encoding]::UTF8)
+} catch {
+  try {
+    [System.IO.File]::WriteAllText($resPath, (@{ status = 'error'; error = $_.Exception.Message } | ConvertTo-Json -Compress), [Text.Encoding]::UTF8)
+  } catch {}
+}
+`;
+}
+
+/**
+ * Sets the primary monitor refresh rate to `targetHz` at its current resolution via Win32
+ * EnumDisplaySettingsW + ChangeDisplaySettingsW (CDS_UPDATEREGISTRY).
+ */
+export async function restoreMonitorRefreshRate(
+  sys: Sys,
+  log: Logger,
+  presenceDir: string,
+  targetHz: number,
+): Promise<DiagActionResult> {
+  if (!Number.isInteger(targetHz) || targetHz < 50 || targetHz > 600) {
+    throw new Error('Некоректна частота оновлення (допустимо ціле число 50..600 Гц)');
+  }
+  if (sys.dryRun) {
+    log.info(`[dry-run] Діагностика: відновлення частоти монітора ${targetHz} Гц`);
+    return { ok: true, message: `[dry-run] Частоту монітора встановлено: ${targetHz} Гц` };
+  }
+
+  fs.mkdirSync(presenceDir, { recursive: true });
+  const token = randomBytes(6).toString('hex');
+  const resultPath = path.join(presenceDir, `hz-${token}.json`);
+  const script = buildRefreshRateScript(resultPath, targetHz);
+
+  log.info(`Діагностика: встановлення частоти монітора ${targetHz} Гц…`);
+  try {
+    if (!isRunningAsSystem()) {
+      const r = await sys.powershell(script, { mutating: true, timeoutMs: 15_000 });
+      if (r.code !== 0 && !fs.existsSync(resultPath)) {
+        return { ok: false, message: r.stderr.trim() || `Не вдалося змінити частоту (код ${r.code})` };
+      }
+    } else {
+      await runUsersPsTask(sys, 'VadeAgent RefreshRate', script, resultPath, true);
+    }
+
+    if (!fs.existsSync(resultPath)) {
+      return { ok: false, message: 'Немає активної сесії користувача або не вдалося отримати доступ до дисплея' };
+    }
+    const parsed = JSON.parse(fs.readFileSync(resultPath, 'utf8').replace(/^\uFEFF/, '')) as {
+      status?: string;
+      currentHz?: number;
+      available?: string;
+      code?: number;
+      error?: string;
+    };
+
+    if (parsed.status === 'already') {
+      return { ok: true, message: `Вже встановлено ${targetHz} Гц` };
+    }
+    if (parsed.status === 'unsupported') {
+      return {
+        ok: false,
+        message: `Монітор не підтримує ${targetHz} Гц (доступно: ${parsed.available || 'немає даних'} Гц)`,
+      };
+    }
+    if (parsed.status === 'chg') {
+      if (parsed.code === 0) {
+        return { ok: true, message: `Частоту монітора змінено: ${parsed.currentHz ?? '?'} → ${targetHz} Гц` };
+      }
+      if (parsed.code === 1) {
+        return { ok: true, message: `Частоту ${targetHz} Гц застосовано (потрібен перезапуск)` };
+      }
+      return { ok: false, message: `Не вдалося змінити частоту на ${targetHz} Гц (код ${parsed.code ?? '?'})` };
+    }
+    return { ok: false, message: parsed.error || `Не вдалося змінити частоту на ${targetHz} Гц` };
+  } finally {
+    try { fs.rmSync(resultPath, { force: true }); } catch { /* ignore */ }
+  }
+}
+
+function resolveRiotExePath(extraApps?: ExtraUpdaterApp[]): string {
+  const apps = extraApps ?? [];
+  const matches = apps.filter(
+    (a) => !!a.exePath?.trim() && (a.id === 'riot' || /riot/i.test(a.name) || /riot/i.test(a.exePath)),
+  );
+  const preferred = matches.find((a) => a.enabled) ?? matches[0];
+  return preferred?.exePath.trim() || 'C:\\Riot Games\\Riot Client\\RiotClientServices.exe';
+}
+
+/**
+ * Force-terminates Steam or Riot Client processes and relaunches the client in the active user session.
+ */
+export async function restartUserLauncher(
+  sys: Sys,
+  log: Logger,
+  args: DiagRestartLauncherArgs,
+  steamPath: string,
+  extraApps?: ExtraUpdaterApp[],
+): Promise<DiagActionResult> {
+  if (args?.app !== 'steam' && args?.app !== 'riot') {
+    throw new Error('Некоректний лаунчер (допустимо steam або riot)');
+  }
+
+  const isSteam = args.app === 'steam';
+  const title = isSteam ? 'Steam' : 'Riot Client';
+  const procs = isSteam
+    ? ['steam.exe', 'steamwebhelper.exe']
+    : ['RiotClientServices.exe', 'RiotClientUx.exe', 'RiotClientUxRender.exe'];
+  const exePath = isSteam
+    ? path.win32.join(steamPath.trim() || 'C:\\Program Files (x86)\\Steam', 'steam.exe')
+    : resolveRiotExePath(extraApps);
+  const launchArgs = isSteam ? '-silent' : '';
+
+  if (sys.dryRun) {
+    log.info(`[dry-run] Діагностика: перезапуск ${title} (${exePath})`);
+    return { ok: true, message: `[dry-run] Перезапущено ${title}` };
+  }
+
+  if (!fs.existsSync(exePath)) {
+    return { ok: false, message: `Не знайдено файл: ${exePath}` };
+  }
+
+  log.info(`Діагностика: перезапуск ${title}…`);
+  for (const proc of procs) {
+    await sys.mutate(EXE.taskkill, ['/F', '/T', '/IM', proc], 8_000);
+  }
+  await sleep(1200);
+
+  const workDir = path.win32.dirname(exePath);
+  if (!isRunningAsSystem()) {
+    const argPart = launchArgs ? ` -ArgumentList ${psQuote(launchArgs)}` : '';
+    const r = await sys.powershell(
+      `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${psQuote(exePath)} -WorkingDirectory ${psQuote(workDir)}${argPart}`,
+      { mutating: true, timeoutMs: 12_000 },
+    );
+    if (r.code !== 0) {
+      return { ok: false, message: `Не вдалося запустити ${title}: ${r.stderr.trim() || `код ${r.code}`}` };
+    }
+    return { ok: true, message: `${title} перезапущено` };
+  }
+
+  const taskPath = '\\VadeAgent\\';
+  const taskName = 'VadeAgent Relaunch';
+  const argLine = launchArgs ? ` -Argument ${psQuote(launchArgs)}` : '';
+  const taskScript = `
+$ErrorActionPreference = 'Stop'
+$action = New-ScheduledTaskAction -Execute ${psQuote(exePath)} -WorkingDirectory ${psQuote(workDir)}${argLine}
+$principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+Register-ScheduledTask -TaskPath ${psQuote(taskPath)} -TaskName ${psQuote(taskName)} -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+try {
+  Start-ScheduledTask -TaskPath ${psQuote(taskPath)} -TaskName ${psQuote(taskName)}
+  Start-Sleep -Milliseconds 500
+} finally {
+  Unregister-ScheduledTask -TaskPath ${psQuote(taskPath)} -TaskName ${psQuote(taskName)} -Confirm:$false -ErrorAction SilentlyContinue
+}
+`;
+  const r = await sys.powershell(taskScript, { mutating: true, timeoutMs: 15_000 });
+  if (r.code !== 0) {
+    return { ok: false, message: `Не вдалося запустити ${title}: ${r.stderr.trim() || `код ${r.code}`}` };
+  }
+  return { ok: true, message: `${title} перезапущено` };
 }
 
 export function redactAgentConfig(fileCfg: AgentFileConfig, stateCfg: AgentConfigPayload | null): Record<string, unknown> {

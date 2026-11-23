@@ -19,6 +19,7 @@ export const EXE = {
   net: path.join(sys32, 'net.exe'),
   w32tm: path.join(sys32, 'w32tm.exe'),
   nvidiaSmi: path.join(sys32, 'nvidia-smi.exe'),
+  msg: path.join(sys32, 'msg.exe'),
 };
 
 export const WINDOWS_TEMP = path.join(sysRoot, 'Temp');

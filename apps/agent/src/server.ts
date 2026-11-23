@@ -14,6 +14,7 @@ import {
   type MsgAuth,
   type MsgRequest,
   type PowerAction,
+  type RestartLauncherApp,
 } from '@vade/protocol';
 import { agentProof, authMac, newNonce, safeEqual, sessionKey, unseal } from '@vade/protocol/auth';
 import type { Agent } from './agent';
@@ -219,6 +220,16 @@ export class AgentServer {
         return a.diagScreenshot();
       case 'diag.bundle':
         return a.diagBundle();
+      case 'diag.notify':
+        return a.diagNotify({
+          title: typeof args.title === 'string' ? args.title : '',
+          message: typeof args.message === 'string' ? args.message : '',
+          timeoutSec: args.timeoutSec === undefined ? undefined : Number(args.timeoutSec),
+        });
+      case 'diag.restoreRefreshRate':
+        return a.diagRestoreRefreshRate(Number(args.targetHz));
+      case 'diag.restartLauncher':
+        return a.diagRestartLauncher({ app: String(args.app ?? '') as RestartLauncherApp });
       case 'deploy.exec':
         return a.deployExec({
           shell: args.shell === 'cmd' ? 'cmd' : 'powershell',

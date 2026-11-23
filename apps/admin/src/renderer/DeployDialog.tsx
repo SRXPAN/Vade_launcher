@@ -5,7 +5,7 @@ import type { DeployRunStatus, PickedDeployFile } from '../shared/api';
 import { api, errorText } from './api';
 import { fmtBytes } from './format';
 import { useI18n } from './i18n';
-import { PinPromptModal } from './PinPromptModal';
+import { useRole } from './role';
 import { Modal, Segmented, useToast } from './ui';
 
 interface Props {
@@ -17,9 +17,10 @@ interface Props {
 
 type Mode = 'exec' | 'file';
 
-export function DeployDialog({ pcIds, runtimes, settings, onClose }: Props) {
+export function DeployDialog({ pcIds, runtimes, settings: _settings, onClose }: Props) {
   const { t } = useI18n();
   const toast = useToast();
+  const { requireOwner } = useRole();
   const [mode, setMode] = useState<Mode>('exec');
   const [shell, setShell] = useState<DeployShell>('powershell');
   const [timeoutSec, setTimeoutSec] = useState(60);
@@ -30,7 +31,6 @@ export function DeployDialog({ pcIds, runtimes, settings, onClose }: Props) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
-  const [pinPrompt, setPinPrompt] = useState(false);
 
   useEffect(() => {
     void api.getDeployStatus().then(setStatus);
@@ -38,7 +38,6 @@ export function DeployDialog({ pcIds, runtimes, settings, onClose }: Props) {
   }, []);
 
   const onlineTargets = pcIds.filter((id) => runtimes[id]?.link === 'online');
-  const hasPin = !!(settings.security.pinHash ?? '').trim();
   const isActive = !!status?.active;
 
   const pickFile = async () => {
@@ -78,8 +77,7 @@ export function DeployDialog({ pcIds, runtimes, settings, onClose }: Props) {
     setError(null);
     if (mode === 'exec' && !script.trim()) return;
     if (mode === 'file' && (!picked || !targetPath.trim())) return;
-    if (hasPin) setPinPrompt(true);
-    else void execute();
+    requireOwner(t('pcs.deployAction'), () => void execute());
   };
 
   const canRun =
@@ -254,16 +252,6 @@ export function DeployDialog({ pcIds, runtimes, settings, onClose }: Props) {
             </table>
           </div>
         </div>
-      )}
-
-      {pinPrompt && (
-        <PinPromptModal
-          onVerified={(pin) => {
-            setPinPrompt(false);
-            void execute(pin);
-          }}
-          onClose={() => setPinPrompt(false)}
-        />
       )}
     </Modal>
   );

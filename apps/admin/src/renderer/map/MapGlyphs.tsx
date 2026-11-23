@@ -38,13 +38,17 @@ interface PcGlyphProps {
   disk: DiskLevel;
   /** 0..1 while SteamCMD downloads, otherwise null */
   progress: number | null;
+  /** PC is marked out of service / in repair */
+  outOfService?: boolean;
+  /** PC has an active desk note */
+  hasNote?: boolean;
   /** Rendered under the pointer while dragging / placing */
   ghost?: boolean;
   /** Highlight invalid drop cell during group drag */
   conflict?: boolean;
 }
 
-function PcGlyphImpl({ id, x, y, tone, selected, editSelected, dim, disk, progress, ghost, conflict }: PcGlyphProps) {
+function PcGlyphImpl({ id, x, y, tone, selected, editSelected, dim, disk, progress, outOfService, hasNote, ghost, conflict }: PcGlyphProps) {
   const c = TONE_COLOR[tone];
   const empty = tone === 'empty';
   const muted = empty || tone === 'offline';
@@ -95,6 +99,47 @@ function PcGlyphImpl({ id, x, y, tone, selected, editSelected, dim, disk, progre
           </>
         ))}
       {disk !== 'ok' && <circle cx={40} cy={7} r={4.2} fill={DISK_COLOR[disk]} stroke="var(--map-floor)" strokeWidth={2} />}
+      {outOfService && (
+        <>
+          <rect
+            className="pc-repair-ring"
+            x={3.5}
+            y={3.5}
+            width={41}
+            height={31}
+            rx={6}
+            fill="none"
+            stroke="var(--occ)"
+            strokeWidth={1.8}
+            strokeDasharray="3.5 2.5"
+          />
+          <g className="pc-repair-badge">
+            <circle cx={39.5} cy={39.5} r={6.5} fill="var(--occ)" stroke="var(--map-floor)" strokeWidth={1.5} />
+            <g transform="translate(39.5 39.5) scale(0.35) translate(-12 -12)">
+              <path
+                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+                fill="none"
+                stroke="#fff"
+                strokeWidth={3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </g>
+          </g>
+        </>
+      )}
+      {!outOfService && hasNote && (
+        <g className="pc-note-badge">
+          <circle cx={39.5} cy={39.5} r={5.8} fill="var(--warn)" stroke="var(--map-floor)" strokeWidth={1.5} />
+          <path
+            d="M37 37.6h5M37 39.6h5M37 41.6h3.2"
+            fill="none"
+            stroke="#fff"
+            strokeWidth={1.35}
+            strokeLinecap="round"
+          />
+        </g>
+      )}
       {selected && (
         <g className="pc-check">
           <circle cx={7.5} cy={7.5} r={6} />

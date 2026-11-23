@@ -17,8 +17,11 @@ import {
   type JobHistoryEntry,
   type JobState,
   type PcRecord,
+  type PcServiceNote,
+  type ThemeMode,
 } from '@vade/protocol';
 import { hashPin, newClubKey, verifyPin } from '@vade/protocol/auth';
+import type { PcServiceNoteInput } from '../shared/api';
 import { defaultMapLayout, sanitizeMapLayout, type MapLayout } from '../shared/mapLayout';
 import { HistoryStore } from './history';
 
@@ -53,6 +56,22 @@ const clamp = (v: number, min: number, max: number, fallback: number) =>
 
 const cleanIds = (ids: unknown): number[] =>
   Array.isArray(ids) ? [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : [];
+
+export function sanitizeServiceNote(raw: unknown): PcServiceNote | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Partial<PcServiceNote>;
+  const outOfService = obj.outOfService === true;
+  const text = typeof obj.text === 'string' ? obj.text.trim().slice(0, 1000) : '';
+  const author = typeof obj.author === 'string' ? obj.author.trim().slice(0, 60) : '';
+  if (!outOfService && !text) return undefined;
+  const updatedAt = typeof obj.updatedAt === 'number' && Number.isFinite(obj.updatedAt) ? obj.updatedAt : Date.now();
+  return {
+    outOfService,
+    text,
+    updatedAt,
+    ...(author ? { author } : {}),
+  };
+}
 
 function sanitizeZoneThresholds(rawMap: unknown): Record<string, Partial<HealthThresholds>> | undefined {
   if (!rawMap || typeof rawMap !== 'object' || Array.isArray(rawMap)) return undefined;
@@ -175,6 +194,19 @@ export function sanitizeSettings(input: AppSettings, current: AppSettings): AppS
   s.security.clubKey = s.security.clubKey.trim();
   // Preserve existing pinHash unless changed explicitly through setPin()
   s.security.pinHash = current.security.pinHash ?? '';
+  s.security.ownerSessionMin = clamp(s.security.ownerSessionMin, 1, 240, 20);
+  s.health.enabled = s.health.enabled !== false;
+  s.health.pollIntervalSec = clamp(s.health.pollIntervalSec, 30, 600, 60);
+  s.health.collectTemps = s.health.collectTemps !== false;
+  s.health.collectSmart = s.health.collectSmart !== false;
+  s.backup.autoEnabled = s.backup.autoEnabled === true;
+  s.backup.dir = String(s.backup.dir ?? '').trim().slice(0, 500);
+  s.backup.keepCount = clamp(s.backup.keepCount, 1, 30, 7);
+  if (s.backup.lastAutoBackupAt != null) {
+    const cleanAt = String(s.backup.lastAutoBackupAt).trim();
+    if (cleanAt) s.backup.lastAutoBackupAt = cleanAt;
+    else delete s.backup.lastAutoBackupAt;
+  }
   s.clubAppIds = cleanIds(s.clubAppIds);
   s.ui.theme = s.ui.theme === 'light' || s.ui.theme === 'dark' || s.ui.theme === 'system' ? s.ui.theme : 'system';
   s.ui.language = s.ui.language === 'uk' || s.ui.language === 'pl' || s.ui.language === 'en' ? s.ui.language : 'uk';
@@ -214,35 +246,72 @@ export class AdminStore {
     this.mapFile = path.join(dir, 'map_layout.json');
     this.historyFile = path.join(dir, 'history.json');
 
+    this.mapLayout = defaultMapLayout();
+    this.settings = defaultSettings(newClubKey());
+    this.pcs = [];
+    this.loadFromDisk(true);
+
+    this.history = new HistoryStore(this.historyFile, this.settings.ui.historyRetentionDays);
+  }
+
+  private loadFromDisk(seedMissing: boolean): void {
     const map = loadMapLayout(this.mapFile);
     this.mapLayout = map.layout;
-    if (map.fresh) writeJson(this.mapFile, this.mapLayout);
+    if (seedMissing && map.fresh) writeJson(this.mapFile, this.mapLayout);
 
     const loaded = readJson<AppSettings>(this.settingsFile);
-    this.settings = mergeDefaults(defaultSettings(newClubKey()), loaded);
+    const baseKey = loaded?.security?.clubKey?.trim() || this.settings?.security?.clubKey || newClubKey();
+    this.settings = mergeDefaults(defaultSettings(baseKey), loaded);
     this.settings.alerts.zoneThresholds = sanitizeZoneThresholds(loaded?.alerts?.zoneThresholds);
     this.settings.clubAppIds = cleanIds(this.settings.clubAppIds);
+    this.settings.security.ownerSessionMin = clamp(this.settings.security.ownerSessionMin, 1, 240, 20);
+    this.settings.health.enabled = this.settings.health.enabled !== false;
+    this.settings.health.pollIntervalSec = clamp(this.settings.health.pollIntervalSec, 30, 600, 60);
+    this.settings.health.collectTemps = this.settings.health.collectTemps !== false;
+    this.settings.health.collectSmart = this.settings.health.collectSmart !== false;
+    this.settings.backup.autoEnabled = this.settings.backup.autoEnabled === true;
+    this.settings.backup.dir = String(this.settings.backup.dir ?? '').trim().slice(0, 500);
+    this.settings.backup.keepCount = clamp(this.settings.backup.keepCount, 1, 30, 7);
     this.settings.ui.theme = ['light', 'dark', 'system'].includes(this.settings.ui.theme) ? this.settings.ui.theme : 'system';
     this.settings.ui.language = ['uk', 'pl', 'en'].includes(this.settings.ui.language) ? this.settings.ui.language : 'uk';
     if (!this.settings.security.clubKey) this.settings.security.clubKey = newClubKey();
-    if (!loaded) writeJson(this.settingsFile, this.settings);
+    if (seedMissing && !loaded) writeJson(this.settingsFile, this.settings);
 
     const rawPcs = readJson<unknown[]>(this.pcsFile);
     this.pcs = Array.isArray(rawPcs)
       ? rawPcs
           .filter((p): p is PcRecord => !!p && typeof p === 'object' && Number.isInteger(Number((p as PcRecord).id)) && Number((p as PcRecord).id) > 0)
-          .map((p) => ({
-            ...p,
-            id: Number(p.id),
-            ip: String(p.ip ?? '').trim(),
-            mac: normalizeMac(String(p.mac ?? '')) ?? String(p.mac ?? '').trim().toLowerCase(),
-            zone: String(p.zone ?? '').trim() || 'Regular',
-          }))
+          .map((p) => {
+            const note = sanitizeServiceNote(p.serviceNote);
+            return {
+              ...p,
+              id: Number(p.id),
+              ip: String(p.ip ?? '').trim(),
+              mac: normalizeMac(String(p.mac ?? '')) ?? String(p.mac ?? '').trim().toLowerCase(),
+              zone: String(p.zone ?? '').trim() || 'Regular',
+              ...(note ? { serviceNote: note } : {}),
+            };
+          })
       : structuredClone(SEED_PCS);
-    if (!Array.isArray(rawPcs)) writeJson(this.pcsFile, this.pcs);
+    if (seedMissing && !Array.isArray(rawPcs)) writeJson(this.pcsFile, this.pcs);
     this.sortPcs();
+  }
 
-    this.history = new HistoryStore(this.historyFile, this.settings.ui.historyRetentionDays);
+  reloadFromDisk(): void {
+    this.loadFromDisk(false);
+    this.history.prune(this.settings.ui.historyRetentionDays);
+  }
+
+  setThemeOnly(theme: ThemeMode): AppSettings {
+    const clean: ThemeMode = theme === 'light' || theme === 'dark' || theme === 'system' ? theme : 'system';
+    this.settings = { ...this.settings, ui: { ...this.settings.ui, theme: clean } };
+    writeJson(this.settingsFile, this.settings);
+    return this.settings;
+  }
+
+  setLastAutoBackupAt(iso: string): void {
+    this.settings = { ...this.settings, backup: { ...this.settings.backup, lastAutoBackupAt: iso } };
+    writeJson(this.settingsFile, this.settings);
   }
 
   saveSettings(next: AppSettings): AppSettings {
@@ -297,11 +366,14 @@ export class AdminStore {
   }
 
   savePc(input: PcRecord, originalId: number | null): { ok: true } | { ok: false; errors: string[] } {
+    const existing = originalId == null ? undefined : this.pcs.find((p) => p.id === originalId);
+    const note = input.serviceNote !== undefined ? sanitizeServiceNote(input.serviceNote) : existing?.serviceNote;
     const pc: PcRecord = {
       id: Number(input.id),
       ip: String(input.ip ?? '').trim(),
       mac: String(input.mac ?? '').trim(),
       zone: String(input.zone ?? '').trim() || 'Regular',
+      ...(note ? { serviceNote: note } : {}),
     };
     if (input.name?.trim()) pc.name = input.name.trim();
     const o = input.overrides ?? {};
@@ -321,6 +393,20 @@ export class AdminStore {
     this.sortPcs();
     writeJson(this.pcsFile, this.pcs);
     return { ok: true };
+  }
+
+  setServiceNote(id: number, note: PcServiceNoteInput | null): PcRecord | null {
+    const pc = this.pcs.find((p) => p.id === id);
+    if (!pc) return null;
+    if (note == null) {
+      delete pc.serviceNote;
+    } else {
+      const next = sanitizeServiceNote({ ...note, updatedAt: Date.now() });
+      if (next) pc.serviceNote = next;
+      else delete pc.serviceNote;
+    }
+    writeJson(this.pcsFile, this.pcs);
+    return pc;
   }
 
   deletePcs(ids: number[]): void {

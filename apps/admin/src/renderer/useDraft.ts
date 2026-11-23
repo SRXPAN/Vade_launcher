@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import type { AppSettings } from '@vade/protocol';
 import { api, errorText } from './api';
 import { useI18n } from './i18n';
+import { useRole } from './role';
 import { useToast } from './ui';
 
 /** Local editable copy of the settings with dirty tracking and save/reset. */
 export function useDraft(settings: AppSettings, onSaved: (s: AppSettings) => void) {
   const { t } = useI18n();
   const toast = useToast();
+  const { requireOwner } = useRole();
   const [draft, setDraft] = useState(settings);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -25,7 +27,7 @@ export function useDraft(settings: AppSettings, onSaved: (s: AppSettings) => voi
     setDraft(settings);
     setError(null);
   };
-  const save = async () => {
+  const performSave = async () => {
     setSaving(true);
     setError(null);
     try {
@@ -37,6 +39,11 @@ export function useDraft(settings: AppSettings, onSaved: (s: AppSettings) => voi
     } finally {
       setSaving(false);
     }
+  };
+  const save = () => {
+    requireOwner(t('common.save'), () => {
+      void performSave();
+    });
   };
   return { draft, update, dirty, reset, save, error, saving };
 }

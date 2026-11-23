@@ -7,11 +7,12 @@ import { Modal } from './ui';
 interface Props {
   title?: string;
   description?: string;
+  verifyPin?: (pin: string) => Promise<{ ok: boolean; error?: string }>;
   onVerified: (pin: string) => void;
   onClose: () => void;
 }
 
-export function PinPromptModal({ title, description, onVerified, onClose }: Props) {
+export function PinPromptModal({ title, description, verifyPin, onVerified, onClose }: Props) {
   const { t } = useI18n();
   const [pin, setPin] = useState('');
   const [checking, setChecking] = useState(false);
@@ -22,10 +23,18 @@ export function PinPromptModal({ title, description, onVerified, onClose }: Prop
     setChecking(true);
     setError(null);
     try {
-      const ok = await api.verifyPin(pin);
-      if (!ok) {
-        setError(t('deploy.pinWrong'));
-        return;
+      if (verifyPin) {
+        const res = await verifyPin(pin);
+        if (!res.ok) {
+          setError(res.error ?? t('deploy.pinWrong'));
+          return;
+        }
+      } else {
+        const ok = await api.verifyPin(pin);
+        if (!ok) {
+          setError(t('deploy.pinWrong'));
+          return;
+        }
       }
       onVerified(pin);
     } catch (e) {

@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   CircleStop,
+  ClipboardList,
   Ellipsis,
   KeyRound,
   Layers,
@@ -18,11 +19,13 @@ import {
   RotateCcw,
   Search,
   Snowflake,
+  Sun,
   Terminal,
   User,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { deriveDisplayStatus, ERR_OCCUPIED, type AppSettings, type PcRecord, type PcRuntime } from '@vade/protocol';
+import { deriveDisplayStatus, ERR_OCCUPIED, resolveHealthThresholds, type AppSettings, type PcRecord, type PcRuntime, type RestartLauncherApp } from '@vade/protocol';
+import { requiresOwnerForAction } from '../shared/access';
 import type { AgentUpdateStatus, PcAction, QueueRunStatus } from '../shared/api';
 import { api, errorText } from './api';
 import { DeployDialog } from './DeployDialog';
@@ -31,11 +34,15 @@ import { ACTIONS, nextFreeId, occupancyOf, occupancyText, QUEUE_STATE_LABEL, sch
 import { useI18n, type I18nKey } from './i18n';
 import { LogDrawer } from './LogDrawer';
 import { ClubMap, type SelectMode } from './map/ClubMap';
+import { NotifyModal } from './NotifyModal';
 import { PcCard } from './PcCard';
 import { PcEditor } from './PcEditor';
-import { PinPromptModal } from './PinPromptModal';
+import { useRole } from './role';
 import { AgentUpdateDialog, QueueDialog, RunBar } from './RunDialogs';
 import { ScanDialog } from './ScanDialog';
+import { ServiceNoteModal } from './ServiceNoteModal';
+import { ShiftMacroModal } from './ShiftMacroModal';
+import { ShiftNotesModal } from './ShiftNotesModal';
 import { SteamLoginDialog } from './SteamLoginDialog';
 import { CheckBox, ConfirmDialog, Menu, Modal, Segmented, useToast } from './ui';
 
@@ -78,7 +85,9 @@ function loadViewMode(): ViewMode {
 
 export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Props) {
   const { t } = useI18n();
+  const tr = (k: string, p?: Record<string, string | number>) => t(k as never, p);
   const toast = useToast();
+  const { state: roleState, requireOwner } = useRole();
   const [view, setView] = useState<ViewMode>(loadViewMode);
   const [zone, setZone] = useState('all');
   const [query, setQuery] = useState('');
@@ -88,9 +97,12 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
   const [steamFor, setSteamFor] = useState<number[] | null>(null);
   const [logPc, setLogPc] = useState<number | null>(null);
   const [diagPc, setDiagPc] = useState<number | null>(null);
+  const [noteFor, setNoteFor] = useState<PcRecord | null>(null);
+  const [shiftNotesOpen, setShiftNotesOpen] = useState(false);
+  const [shiftMacro, setShiftMacro] = useState<'open' | 'close' | null>(null);
+  const [notifyPc, setNotifyPc] = useState<PcRecord | null>(null);
   const [confirm, setConfirm] = useState<{ action: PcAction; ids: number[] } | null>(null);
   const [occupiedPrompt, setOccupiedPrompt] = useState<{ action: PcAction; ids: number[]; busyIds: number[] } | null>(null);
-  const [pinForAction, setPinForAction] = useState<{ action: PcAction; ids: number[]; force: boolean } | null>(null);
   const [busy, setBusy] = useState<PcAction | null>(null);
   const [queueStatus, setQueueStatus] = useState<QueueRunStatus | null>(null);
   const [updateStatus, setUpdateStatus] = useState<AgentUpdateStatus | null>(null);
@@ -126,7 +138,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
     }
     return m;
   }, [queueStatus, updateStatus]);
-  const openUpdate = useCallback((ids: number[]) => setUpdateFor(ids), []);
+  const openUpdate = useCallback((ids: number[]) => requireOwner(t('pcs.updateAgentAction'), () => setUpdateFor(ids)), [requireOwner, t]);
 
   useEffect(() => {
     setSelected((s) => new Set([...s].filter((id) => pcs.some((p) => p.id === id))));
@@ -178,9 +190,12 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
       return n;
     });
   }, []);
-  const addPcAt = useCallback((id: number, zoneName: string, onCreated?: (pc: PcRecord) => void) => {
-    setEditor({ pc: { id, ip: '', mac: '', zone: zoneName }, originalId: null, onCreated });
-  }, []);
+  const addPcAt = useCallback(
+    (id: number, zoneName: string, onCreated?: (pc: PcRecord) => void) => {
+      requireOwner(t('pcs.addPc'), () => setEditor({ pc: { id, ip: '', mac: '', zone: zoneName }, originalId: null, onCreated }));
+    },
+    [requireOwner, t],
+  );
   const selectWhere = (pred: (p: PcRecord) => boolean) => setSelected(new Set(pcs.filter(pred).map((p) => p.id)));
 
   const execute = useCallback(
@@ -227,18 +242,65 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
   );
   const occupiedAmong = (ids: number[]) => ids.filter((id) => occupancyOf(runtimes[id]) === 'occupied');
 
-  const openEditor = useCallback((pc: PcRecord) => setEditor({ pc, originalId: pc.id }), []);
+  const openEditor = useCallback((pc: PcRecord) => requireOwner(t('pcs.editPc'), () => setEditor({ pc, originalId: pc.id })), [requireOwner, t]);
   const logPcRecord = logPc != null ? pcs.find((p) => p.id === logPc) : undefined;
   const diagPcRecord = diagPc != null ? pcs.find((p) => p.id === diagPc) : undefined;
-  const hasPin = !!(settings.security.pinHash ?? '').trim();
+  const shiftNotesCount = useMemo(() => pcs.filter((p) => p.serviceNote?.outOfService || p.serviceNote?.text?.trim()).length, [pcs]);
+  const targetHzFor = useCallback((pc: PcRecord) => resolveHealthThresholds(settings.alerts, pc.zone).minRefreshRateHz || 240, [settings.alerts]);
+
+  const handleToggleRepair = useCallback(
+    async (pc: PcRecord) => {
+      const nextOut = !pc.serviceNote?.outOfService;
+      const text = pc.serviceNote?.text ?? '';
+      try {
+        const nextPcs = await api.setPcServiceNote(
+          pc.id,
+          !nextOut && !text.trim() ? null : { outOfService: nextOut, text, author: roleState.operatorName || undefined },
+        );
+        setPcs(nextPcs);
+        toast('ok', nextOut ? tr('note.savedRepairToast', { id: pc.id }) : tr('shift.repairClearedToast', { id: pc.id }));
+      } catch (e) {
+        toast('error', errorText(e));
+      }
+    },
+    [roleState.operatorName, setPcs, toast],
+  );
+
+  const handleRestoreHz = useCallback(
+    async (pc: PcRecord) => {
+      try {
+        const res = await api.diagRestoreRefreshRate(pc.id, targetHzFor(pc));
+        toast(res.ok ? 'ok' : 'error', res.message);
+      } catch (e) {
+        toast('error', errorText(e));
+      }
+    },
+    [targetHzFor, toast],
+  );
+
+  const handleRestartLauncher = useCallback(
+    async (pc: PcRecord, app: RestartLauncherApp) => {
+      try {
+        const res = await api.diagRestartLauncher(pc.id, app);
+        toast(res.ok ? 'ok' : 'error', res.message);
+      } catch (e) {
+        toast('error', errorText(e));
+      }
+    },
+    [toast],
+  );
 
   const runWithOptionalPin = (action: PcAction, ids: number[], force: boolean) => {
-    const needsPin =
-      hasPin &&
-      ((POWER_DANGER.includes(action) && occupiedAmong(ids).length > 0 && (ids.length > 1 || action === 'shutdown' || action === 'restart')) ||
-        (force && occupiedAmong(ids).length > 0 && KICKS_PLAYER.includes(action)));
-    if (needsPin) {
-      setPinForAction({ action, ids, force });
+    if (
+      requiresOwnerForAction({
+        pinEnabled: roleState.pinEnabled,
+        role: roleState.role,
+        action,
+        occupiedCount: occupiedAmong(ids).length,
+        force,
+      })
+    ) {
+      requireOwner(ACTIONS[action].label, () => void execute(action, ids, force));
       return;
     }
     void execute(action, ids, force);
@@ -288,14 +350,50 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
             <input className="input" placeholder={t('pcs.searchPlaceholder')} value={query} onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="spacer" />
-          <button className="btn" onClick={() => setScanOpen(true)}>
-            <Radar size={16} /> {t('pcs.scanNetwork')}
+          <Menu
+            down
+            trigger={(open) => (
+              <button type="button" className="btn small" onClick={open}>
+                {tr('shift.menuBtn')} <ChevronDown size={13} />
+              </button>
+            )}
+          >
+            {(close) => (
+              <>
+                <button
+                  onClick={() => {
+                    close();
+                    setShiftMacro('open');
+                  }}
+                >
+                  <Sun size={15} /> {tr('shift.openTitle')}
+                </button>
+                <button
+                  onClick={() => {
+                    close();
+                    setShiftMacro('close');
+                  }}
+                >
+                  <Moon size={15} /> {tr('shift.closeTitle')}
+                </button>
+              </>
+            )}
+          </Menu>
+          <button
+            type="button"
+            className={`btn small ${shiftNotesCount > 0 ? 'has-notes' : ''}`}
+            onClick={() => setShiftNotesOpen(true)}
+          >
+            <ClipboardList size={14} /> {tr('shift.notesBtn', { count: shiftNotesCount })}
+          </button>
+          <button className="btn small" onClick={() => setScanOpen(true)}>
+            <Radar size={15} /> {t('pcs.scanNetwork')}
           </button>
           <button
-            className="btn primary"
-            onClick={() => setEditor({ pc: { id: nextFreeId(pcs), ip: '', mac: '', zone: zone !== 'all' ? zone : 'Regular' }, originalId: null })}
+            className="btn small primary"
+            onClick={() => requireOwner(t('pcs.addPc'), () => setEditor({ pc: { id: nextFreeId(pcs), ip: '', mac: '', zone: zone !== 'all' ? zone : 'Regular' }, originalId: null }))}
           >
-            <Plus size={16} /> {t('pcs.addPc')}
+            <Plus size={15} /> {t('pcs.addPc')}
           </button>
         </div>
         <div className="toolbar-row selbar">
@@ -390,7 +488,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                   <button
                     onClick={() => {
                       close();
-                      setDeployFor(selIds);
+                      requireOwner(t('pcs.deployAction'), () => setDeployFor(selIds));
                     }}
                   >
                     <Terminal size={15} /> {t('pcs.deployAction')}
@@ -439,6 +537,12 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           onAddPc={addPcAt}
           onSteamLogin={setSteamFor}
           onUpdateAgent={openUpdate}
+          onBeforeEdit={(proceed) => requireOwner(tr('map.editLockHint'), proceed)}
+          onToggleRepair={(pc) => void handleToggleRepair(pc)}
+          onEditNote={setNoteFor}
+          onNotify={setNotifyPc}
+          onRestoreHz={(pc) => void handleRestoreHz(pc)}
+          onRestartLauncher={(pc, app) => void handleRestartLauncher(pc, app)}
         />
       ) : visible.length === 0 ? (
         <div className="empty">{pcs.length ? t('pcs.empty') : t('pcs.emptyList')}</div>
@@ -469,6 +573,12 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
                   onDiag={setDiagPc}
                   onEdit={openEditor}
                   onUpdateAgent={openUpdate}
+                  onToggleRepair={(p) => void handleToggleRepair(p)}
+                  onEditNote={setNoteFor}
+                  onNotify={setNotifyPc}
+                  onRestoreHz={(p) => void handleRestoreHz(p)}
+                  onRestartLauncher={(p, app) => void handleRestartLauncher(p, app)}
+                  targetHz={targetHzFor(pc)}
                 />
               ))}
             </div>
@@ -489,18 +599,42 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           onDiag={setDiagPc}
         />
       )}
-      {diagPcRecord && <DiagDialog pc={diagPcRecord} rt={runtimes[diagPcRecord.id]} onClose={() => setDiagPc(null)} />}
+      {diagPcRecord && <DiagDialog pc={diagPcRecord} rt={runtimes[diagPcRecord.id]} settings={settings} onClose={() => setDiagPc(null)} />}
       {deployFor && <DeployDialog pcIds={deployFor} runtimes={runtimes} settings={settings} onClose={() => setDeployFor(null)} />}
-      {pinForAction && (
-        <PinPromptModal
-          onVerified={() => {
-            const p = pinForAction;
-            setPinForAction(null);
-            void execute(p.action, p.ids, p.force);
-          }}
-          onClose={() => setPinForAction(null)}
+      {noteFor && (
+        <ServiceNoteModal
+          pc={noteFor}
+          operatorName={roleState.operatorName || undefined}
+          onClose={() => setNoteFor(null)}
+          onSaved={setPcs}
         />
       )}
+      {shiftNotesOpen && (
+        <ShiftNotesModal
+          pcs={pcs}
+          operatorName={roleState.operatorName || undefined}
+          onEditNote={(p) => {
+            setShiftNotesOpen(false);
+            setNoteFor(p);
+          }}
+          onLogs={(id) => {
+            setShiftNotesOpen(false);
+            setLogPc(id);
+          }}
+          onUpdated={setPcs}
+          onClose={() => setShiftNotesOpen(false)}
+        />
+      )}
+      {shiftMacro && (
+        <ShiftMacroModal
+          mode={shiftMacro}
+          pcs={pcs}
+          runtimes={runtimes}
+          settings={settings}
+          onClose={() => setShiftMacro(null)}
+        />
+      )}
+      {notifyPc && <NotifyModal pc={notifyPc} onClose={() => setNotifyPc(null)} />}
       {occupiedPrompt && (
         <Modal
           title={occupiedPrompt.busyIds.length === 1 ? `ПК №${occupiedPrompt.busyIds[0]} зайнятий гравцем` : `Зайняті гравцями: ${occupiedPrompt.busyIds.length} ПК`}
@@ -557,7 +691,7 @@ export function PcsView({ pcs, setPcs, runtimes, settings, onSettingsSaved }: Pr
           pcs={pcs}
           settings={settings}
           onClose={() => setScanOpen(false)}
-          onAdd={(ip, mac) => setEditor({ pc: { id: nextFreeId(pcs), ip, mac, zone: 'Regular' }, originalId: null })}
+          onAdd={(ip, mac) => requireOwner(t('pcs.addPc'), () => setEditor({ pc: { id: nextFreeId(pcs), ip, mac, zone: 'Regular' }, originalId: null }))}
           onPcsChanged={setPcs}
         />
       )}

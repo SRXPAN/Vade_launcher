@@ -1,10 +1,12 @@
 import type {
   AlertSettings,
   AppSettings,
+  BackupSettings,
   BrowserId,
   CleanLaunchersSettings,
   DetectorSettings,
   ExtraUpdatersConfig,
+  HealthTelemetrySettings,
   LauncherId,
   PostSessionCleanSettings,
   MaintenanceConfig,
@@ -158,6 +160,19 @@ export const DEFAULT_ALERTS: AlertSettings = {
   maxSsdWearPct: 80,
 };
 
+export const DEFAULT_HEALTH_TELEMETRY: HealthTelemetrySettings = {
+  enabled: true,
+  pollIntervalSec: 60,
+  collectTemps: true,
+  collectSmart: true,
+};
+
+export const DEFAULT_BACKUP: BackupSettings = {
+  autoEnabled: false,
+  dir: '',
+  keepCount: 7,
+};
+
 /** Changes only + heartbeat every 10 min: fits Cloudflare KV Free (1000 writes/day). */
 export const DEFAULT_SITE: SiteSettings = {
   enabled: false,
@@ -196,7 +211,9 @@ export function defaultSettings(clubKey: string): AppSettings {
     detector: structuredClone(DEFAULT_DETECTOR),
     postSessionClean: structuredClone(DEFAULT_POST_SESSION_CLEAN),
     alerts: { ...DEFAULT_ALERTS },
-    security: { clubKey, pinHash: '' },
+    health: { ...DEFAULT_HEALTH_TELEMETRY },
+    security: { clubKey, pinHash: '', ownerSessionMin: 20 },
+    backup: { ...DEFAULT_BACKUP },
     site: { ...DEFAULT_SITE },
     ui: { autostart: true, closeToTray: true, theme: 'system', language: 'uk', historyRetentionDays: 14 },
   };
