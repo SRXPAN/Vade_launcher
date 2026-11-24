@@ -22,6 +22,7 @@ import type {
   RestartLauncherApp,
   SteamLoginResult,
   ThemeMode,
+  TvDisplayConfig,
 } from '@vade/protocol';
 import type { MapLayout } from './mapLayout';
 
@@ -277,6 +278,29 @@ export interface BackupStatus {
   lastError: string | null;
 }
 
+export interface TvServerStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  urls: string[];
+  clients: number;
+  error: string | null;
+}
+
+export interface TvPublishResult {
+  ok: boolean;
+  url?: string;
+  status?: number;
+  error?: string;
+  ms: number;
+  bytes?: number;
+}
+
+export interface TvPublishStatus {
+  lastPublishAt: string | null;
+  lastResult: TvPublishResult | null;
+}
+
 export interface VadeApi {
   getAppInfo(): Promise<AppInfo>;
   getSettings(): Promise<AppSettings>;
@@ -341,6 +365,14 @@ export interface VadeApi {
   pickBackupDir(): Promise<string | null>;
   runAutoBackupNow(): Promise<{ ok: boolean; path?: string; error?: string }>;
   getBackupStatus(): Promise<BackupStatus>;
+  getTvConfig(): Promise<TvDisplayConfig>;
+  saveTvConfig(cfg: TvDisplayConfig): Promise<TvDisplayConfig>;
+  getTvServerStatus(): Promise<TvServerStatus>;
+  onTvServerStatus(cb: (s: TvServerStatus) => void): () => void;
+  publishTvConfig(): Promise<TvPublishResult>;
+  getTvPublishStatus(): Promise<TvPublishStatus>;
+  onTvPublishStatus(cb: (s: TvPublishStatus) => void): () => void;
+  openTvPreview(): Promise<{ ok: boolean; url?: string; error?: string }>;
   pickDeployFile(): Promise<PickedDeployFile | null>;
   startDeployExec(req: DeployExecRequest): Promise<{ ok: boolean; error?: string }>;
   startDeployFile(req: DeployFileRequest): Promise<{ ok: boolean; error?: string }>;
@@ -415,6 +447,12 @@ export const IPC = {
   backupPickDir: 'backup:pick-dir',
   backupRunNow: 'backup:run-now',
   backupStatus: 'backup:status',
+  tvConfigGet: 'tv:config-get',
+  tvConfigSave: 'tv:config-save',
+  tvServerStatus: 'tv:server-status',
+  tvPublish: 'tv:publish',
+  tvPublishStatus: 'tv:publish-status',
+  tvOpenPreview: 'tv:open-preview',
   deployPickFile: 'deploy:pick-file',
   deployExecStart: 'deploy:exec-start',
   deployFileStart: 'deploy:file-start',
@@ -437,4 +475,6 @@ export const IPC = {
   historyUpdate: 'history:update',
   roleChanged: 'role:changed',
   auditUpdate: 'audit:update',
+  tvServerUpdate: 'tv:server-update',
+  tvPublishUpdate: 'tv:publish-update',
 } as const;

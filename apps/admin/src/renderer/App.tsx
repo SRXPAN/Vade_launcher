@@ -9,6 +9,7 @@ import {
   Moon,
   Settings,
   Sun,
+  Tv,
   User,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -24,9 +25,10 @@ import { RoleControls, RoleProvider } from './role';
 import { ScheduleView } from './ScheduleView';
 import { SettingsView } from './SettingsView';
 import { SiteView } from './SiteView';
+import { TvView } from './TvView';
 import { ToastProvider, useNow, useToast } from './ui';
 
-type Tab = 'pcs' | 'games' | 'schedule' | 'history' | 'site' | 'settings';
+type Tab = 'pcs' | 'games' | 'schedule' | 'history' | 'site' | 'tv' | 'settings';
 
 function useSystemDark(): boolean {
   const [dark, setDark] = useState(() => (typeof window !== 'undefined' ? window.matchMedia('(prefers-color-scheme: dark)').matches : true));
@@ -104,6 +106,9 @@ function AppShell(props: {
           <button className={`tab ${tab === 'site' ? 'active' : ''}`} onClick={() => setTab('site')}>
             <Globe size={16} /> {t('nav.site')}
           </button>
+          <button className={`tab ${tab === 'tv' ? 'active' : ''}`} onClick={() => setTab('tv')}>
+            <Tv size={16} /> {t('nav.tv')}
+          </button>
           <button className={`tab ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
             <Settings size={16} /> {t('nav.settings')}
           </button>
@@ -154,6 +159,7 @@ function AppShell(props: {
         {tab === 'schedule' && <ScheduleView settings={settings} onSaved={setSettings} pcs={pcs} setPcs={setPcs} />}
         {tab === 'history' && <HistoryView pcs={pcs} />}
         {tab === 'site' && <SiteView settings={settings} onSaved={setSettings} pcs={pcs} runtimes={runtimes} />}
+        {tab === 'tv' && <TvView settings={settings} onOpenSiteTab={() => setTab('site')} />}
         {tab === 'settings' && (
           <SettingsView
             settings={settings}

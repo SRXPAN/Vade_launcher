@@ -16,8 +16,9 @@ import type {
   PublicPcStatus,
   SiteSettings,
   StepId,
+  TvDisplayConfig,
 } from './types';
-import { DEFAULT_AGENT_PORT, DEFAULT_DISCOVERY_PORT } from './types';
+import { DEFAULT_AGENT_PORT, DEFAULT_DISCOVERY_PORT, DEFAULT_TV_PORT } from './types';
 
 export const DEFAULT_EXTRA_UPDATERS: ExtraUpdatersConfig = {
   enabled: false,
@@ -289,3 +290,26 @@ export const AFTER_ACTION_TITLES = {
   hibernate: 'Гібернація',
   shutdown: 'Вимкнення',
 } as const;
+
+export const TV_LIMITS = {
+  maxSlides: 8,
+  maxQrCards: 4,
+  minDurationSec: 5,
+  maxDurationSec: 30,
+  defaultDurationSec: 8,
+  minPort: 1024,
+  maxPort: 65535,
+  maxDataUrlBytes: 1_500_000,
+} as const;
+
+export function defaultTvConfig(): TvDisplayConfig {
+  return {
+    updatedAt: 0,
+    lang: 'pl',
+    defaultSlideDurationSec: TV_LIMITS.defaultDurationSec,
+    localServerEnabled: true,
+    localServerPort: DEFAULT_TV_PORT,
+    slides: [],
+    qrCards: [],
+  };
+}

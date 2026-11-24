@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { BrowserWindow, ipcMain, Menu, nativeTheme, shell, Tray } from 'electron';
-import type { AppSettings, AuditAction, DiagNotifyArgs, PcRecord, RestartLauncherApp, ThemeMode } from '@vade/protocol';
+import type { AppSettings, AuditAction, DiagNotifyArgs, PcRecord, RestartLauncherApp, ThemeMode, TvDisplayConfig } from '@vade/protocol';
 import { app, dialog } from 'electron';
 import { requiresOwnerForAction, RoleController } from '../shared/access';
 import {
@@ -30,6 +30,9 @@ import { localIpv4, scanNetwork } from './scanner';
 import { WolScheduler } from './scheduler';
 import { SitePublisher } from './sitePublisher';
 import { AdminStore } from './store';
+import { TvPublisher } from './tvPublisher';
+import { TvServer } from './tvServer';
+import { TvStore } from './tvStore';
 import { AppUpdater } from './updater';
 
 const DEV_URL = process.env.VADE_DEV_URL;
@@ -104,10 +107,42 @@ function start(): void {
     const st = role.state();
     audit.record({ role: st.role, operatorName: st.operatorName, action, targets, details });
   };
-  const autoBackup = new AutoBackupScheduler(store, app.getVersion(), (iso) => {
+  const tvStore = new TvStore(store.dir);
+  const hub = new AgentHub(store);
+  const tvServer = new TvServer({
+    getConfig: () => tvStore.getHydratedConfig(),
+    getServedConfig: () => tvStore.getLocalServedConfig(),
+    resolveAsset: (name) => tvStore.resolveAsset(name),
+    getPcs: () => store.pcs,
+    getRuntime: (id) => hub.runtime(id),
+    getMapLayout: () => store.mapLayout,
+    getLocalIps: () => localIpv4().map((x) => x.ip),
+  });
+  const backupStore = {
+    get dir() {
+      return store.dir;
+    },
+    get settings() {
+      return store.settings;
+    },
+    get pcs() {
+      return store.pcs;
+    },
+    get mapLayout() {
+      return store.mapLayout;
+    },
+    settingsFile: store.settingsFile,
+    pcsFile: store.pcsFile,
+    mapFile: store.mapFile,
+    reloadFromDisk: () => store.reloadFromDisk(),
+    tvReloadFromDisk: () => {
+      tvStore.reloadFromDisk();
+      void tvServer.reconfigure();
+    },
+  };
+  const autoBackup = new AutoBackupScheduler(backupStore, app.getVersion(), (iso) => {
     store.setLastAutoBackupAt(iso);
   });
-  const hub = new AgentHub(store);
   const discovery = new AdminDiscoveryListener(store, hub);
   const queue = new MaintenanceQueue({
     pcs: () => store.pcs,
@@ -141,11 +176,17 @@ function start(): void {
     stateFile: path.join(store.dir, 'site-counter.json'),
     userAgent: `VadeLauncher/${app.getVersion()}`,
   });
+  const tvPublisher = new TvPublisher({
+    getSiteSettings: () => store.settings.site,
+    getHydratedConfig: () => tvStore.getHydratedConfig(),
+    userAgent: `VadeLauncher/${app.getVersion()}`,
+  });
   const icon = appIcon(32);
 
   hub.on('runtimes', (r) => {
     win?.webContents.send(IPC.runtimesUpdate, r);
     site.notifyChange();
+    tvServer.notifyStatus();
   });
   hub.on('logs', (b) => win?.webContents.send(IPC.logsAppend, b));
   hub.on('pcsChanged', (pcs) => win?.webContents.send(IPC.pcsChanged, pcs));
@@ -153,6 +194,8 @@ function start(): void {
   audit.on('changed', (entries) => win?.webContents.send(IPC.auditUpdate, entries));
   role.on('changed', (st) => win?.webContents.send(IPC.roleChanged, st));
   site.on('status', (s) => win?.webContents.send(IPC.siteUpdate, s));
+  tvServer.on('status', (s) => win?.webContents.send(IPC.tvServerUpdate, s));
+  tvPublisher.on('status', (s) => win?.webContents.send(IPC.tvPublishUpdate, s));
   queue.on('status', (s) => win?.webContents.send(IPC.queueUpdate, s));
   updater.on('status', (s) => win?.webContents.send(IPC.agentUpdateUpdate, s));
   deploy.on('status', (s) => win?.webContents.send(IPC.deployUpdate, s));
@@ -220,6 +263,7 @@ function start(): void {
     hub.sync();
     void hub.pushConfig(Number(pc.id)).catch(() => undefined);
     site.notifyChange();
+    tvServer.notifyStatus();
     recordAudit('pc.save', [Number(pc.id)], originalId == null ? 'created' : 'updated');
     return { ok: true, pcs: store.pcs };
   });
@@ -229,6 +273,7 @@ function start(): void {
     store.deletePcs(numIds);
     hub.sync();
     site.notifyChange();
+    tvServer.notifyStatus();
     recordAudit('pc.delete', numIds);
     return store.pcs;
   });
@@ -248,6 +293,7 @@ function start(): void {
     const updated = store.setServiceNote(id, normalizedInput);
     if (updated) {
       site.notifyChange();
+      tvServer.notifyStatus();
       win?.webContents.send(IPC.pcsChanged, store.pcs);
       if (normalizedInput == null) recordAudit('pc.note_set', [id], 'cleared');
       else if (!prevOut && normalizedInput.outOfService) recordAudit('pc.repair_set', [id], normalizedInput.text);
@@ -260,6 +306,7 @@ function start(): void {
   ipcMain.handle(IPC.mapSave, (_e, layout: unknown) => {
     role.requireOwner('map.edit');
     const saved = store.saveMapLayout(layout);
+    tvServer.notifyLayout();
     recordAudit('map.save');
     return saved;
   });
@@ -454,7 +501,7 @@ function start(): void {
     if (!win) return { ok: false };
     try {
       role.requireOwner('backup');
-      const r = await exportBackupDialog(win, store, app.getVersion());
+      const r = await exportBackupDialog(win, backupStore, app.getVersion());
       if (r.ok) recordAudit('backup.export', [], r.path);
       return r;
     } catch (e) {
@@ -465,7 +512,7 @@ function start(): void {
     if (!win) return { ok: false };
     try {
       role.requireOwner('backup');
-      const r = await importBackupDialog(win, store);
+      const r = await importBackupDialog(win, backupStore);
       if (r.ok) {
         hub.sync();
         hub.pushConfigAll();
@@ -474,6 +521,8 @@ function start(): void {
         autoBackup.reconfigure();
         role.syncPinConfig();
         nativeTheme.themeSource = store.settings.ui.theme;
+        tvServer.notifyStatus();
+        tvServer.notifyLayout();
         win?.webContents.send(IPC.pcsChanged, store.pcs);
         recordAudit('backup.import', [], r.path);
         return { ...r, settings: store.settings, pcs: store.pcs };
@@ -502,6 +551,39 @@ function start(): void {
     }
   });
   ipcMain.handle(IPC.backupStatus, () => autoBackup.status());
+  ipcMain.handle(IPC.tvConfigGet, () => tvStore.getHydratedConfig());
+  ipcMain.handle(IPC.tvConfigSave, async (_e, cfg: TvDisplayConfig) => {
+    role.requireOwner('tv.edit');
+    const prevEnabled = tvStore.getHydratedConfig().localServerEnabled;
+    const saved = tvStore.save(cfg);
+    await tvServer.reconfigure();
+    recordAudit(
+      'tv.save',
+      [],
+      `${saved.slides.filter((s) => s.enabled).length} slides, ${saved.qrCards.filter((c) => c.enabled).length} QR`,
+    );
+    if (prevEnabled !== saved.localServerEnabled) {
+      recordAudit('tv.server_toggle', [], saved.localServerEnabled ? 'enabled' : 'disabled');
+    }
+    return saved;
+  });
+  ipcMain.handle(IPC.tvServerStatus, () => tvServer.status());
+  ipcMain.handle(IPC.tvPublish, async () => {
+    role.requireOwner('tv.edit');
+    const res = await tvPublisher.publish();
+    if (res.ok) recordAudit('tv.publish', [], res.url);
+    return res;
+  });
+  ipcMain.handle(IPC.tvPublishStatus, () => tvPublisher.status());
+  ipcMain.handle(IPC.tvOpenPreview, async () => {
+    const st = tvServer.status();
+    if (!st.running) {
+      return { ok: false, error: st.error || 'Локальний TV-сервер вимкнено або не запущений' };
+    }
+    const url = st.urls[0] ?? `http://127.0.0.1:${st.port}/`;
+    await shell.openExternal(url);
+    return { ok: true, url };
+  });
   ipcMain.handle(IPC.deployPickFile, async () => {
     if (!win) return null;
     const r = await dialog.showOpenDialog(win, {
@@ -631,6 +713,7 @@ function start(): void {
     discovery.stop();
     wol.stop();
     site.stop();
+    void tvServer.stop();
     autoBackup.stop();
     role.stop();
     queue.cancel();
@@ -666,6 +749,7 @@ function start(): void {
   wol.start();
   site.start();
   autoBackup.start();
+  void tvServer.start();
   applyAutostart(store.settings.ui.autostart);
   appUpdater.startAutoCheck();
 

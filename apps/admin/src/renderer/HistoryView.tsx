@@ -50,6 +50,9 @@ const AUDIT_ACTION_GROUP: Record<string, Exclude<AuditGroup, 'all'>> = {
   'map.save': 'config',
   'backup.export': 'config',
   'backup.import': 'config',
+  'tv.save': 'config',
+  'tv.publish': 'config',
+  'tv.server_toggle': 'config',
   'shift.open': 'shift',
   'shift.close': 'shift',
   'role.unlock': 'role',
@@ -96,6 +99,9 @@ const AUDIT_ACTION_KEY: Record<string, string> = {
   'role.lock': 'audit.action.role.lock',
   'games.install': 'audit.action.games.install',
   'games.uninstall': 'audit.action.games.uninstall',
+  'tv.save': 'audit.action.tv.save',
+  'tv.publish': 'audit.action.tv.publish',
+  'tv.server_toggle': 'audit.action.tv.server_toggle',
 };
 
 const AUDIT_GROUP_OPTIONS: Array<{ value: AuditGroup; labelKey: string }> = [

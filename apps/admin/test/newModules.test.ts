@@ -164,7 +164,7 @@ describe('Stage 7: i18n dictionary completeness & placeholders parity', () => {
       expect(nonI18nSources, `Unused i18n key: ${key}`).toContain(key);
     }
 
-    for (const file of ['GamesView.tsx', 'DiagDialog.tsx', 'DeployDialog.tsx', 'PinPromptModal.tsx', 'SaveBar.tsx', 'ui.tsx', 'role.tsx', 'ServiceNoteModal.tsx', 'ShiftNotesModal.tsx', 'ShiftMacroModal.tsx', 'NotifyModal.tsx']) {
+    for (const file of ['GamesView.tsx', 'DiagDialog.tsx', 'DeployDialog.tsx', 'PinPromptModal.tsx', 'SaveBar.tsx', 'ui.tsx', 'role.tsx', 'ServiceNoteModal.tsx', 'ShiftNotesModal.tsx', 'ShiftMacroModal.tsx', 'NotifyModal.tsx', 'TvView.tsx']) {
       const noComments = fs
         .readFileSync(path.join(rendererRoot, file), 'utf8')
         .replace(/\/\*[\s\S]*?\*\//g, '')

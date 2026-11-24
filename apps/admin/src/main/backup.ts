@@ -4,9 +4,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { dialog, shell, type BrowserWindow } from 'electron';
-import type { AppSettings, PcRecord } from '@vade/protocol';
+import { defaultTvConfig, sanitizeTvConfig, type AppSettings, type PcRecord } from '@vade/protocol';
 import type { BackupStatus } from '../shared/api';
 import { sanitizeMapLayout, type MapLayout } from '../shared/mapLayout';
+import { preprocessTvRefsForSanitize } from './tvStore';
 import { readZipFile, writeZipFile, type ZipEntry } from './zip';
 
 export interface BackupStoreLike {
@@ -18,6 +19,7 @@ export interface BackupStoreLike {
   pcsFile: string;
   mapFile: string;
   reloadFromDisk?: () => void;
+  tvReloadFromDisk?: () => void;
 }
 
 export interface BackupManifest {
@@ -29,6 +31,8 @@ export interface BackupManifest {
 }
 
 const BACKUP_FILE_RE = /^vade-backup-(\d{4}-\d{2}-\d{2})\.zip$/;
+const TV_ASSET_NAME_RE = /^[a-f0-9]{16}\.(webp|jpg|jpeg|png|svg)$/i;
+const LOCAL_TV_ASSET_URL_RE = /^\/tv-assets\/([a-f0-9]{16}\.(?:webp|jpg|jpeg|png|svg))$/i;
 const DEFAULT_KEEP_COUNT = 7;
 const INITIAL_DELAY_MS = 15_000;
 const CHECK_INTERVAL_MS = 3600_000;
@@ -86,9 +90,73 @@ export function formatBackupDay(d = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Builds full (unredacted) backup ZIP entries including clubKey, pinHash, and site.token. */
+function mapTvLocalUrlsToAssetRefs(raw: unknown): Buffer {
+  const sanitized = sanitizeTvConfig(preprocessTvRefsForSanitize(raw), defaultTvConfig());
+  const toAssetRef = (val: string | undefined): string => {
+    if (!val) return '';
+    const m = LOCAL_TV_ASSET_URL_RE.exec(val.trim());
+    return m ? `@asset:${m[1].toLowerCase()}` : val;
+  };
+  const restored = {
+    ...sanitized,
+    slides: sanitized.slides.map((s) => ({
+      ...s,
+      imageDataUrl: toAssetRef(s.imageDataUrl),
+    })),
+    qrCards: sanitized.qrCards.map((c) => {
+      const next = { ...c };
+      if (next.qrImageDataUrl) {
+        const mapped = toAssetRef(next.qrImageDataUrl);
+        if (mapped) next.qrImageDataUrl = mapped;
+        else delete next.qrImageDataUrl;
+      }
+      if (next.bgImageDataUrl) {
+        const mapped = toAssetRef(next.bgImageDataUrl);
+        if (mapped) next.bgImageDataUrl = mapped;
+        else delete next.bgImageDataUrl;
+      }
+      return next;
+    }),
+  };
+  return Buffer.from(JSON.stringify(restored, null, 2), 'utf8');
+}
+
+/** Builds full (unredacted) backup ZIP entries including clubKey, pinHash, site.token, and optional TV assets. */
 export function buildBackupEntries(store: BackupStoreLike, appVersion: string, now = new Date()): ZipEntry[] {
   const packedFiles = ['settings.json', 'pcs.json', 'map_layout.json', 'club.key'];
+  const clubKey = String(store.settings.security?.clubKey ?? '').trim();
+
+  const entries: ZipEntry[] = [
+    { name: 'settings.json', data: readFileOrJson(store.settingsFile, store.settings), mtime: now },
+    { name: 'pcs.json', data: readFileOrJson(store.pcsFile, store.pcs), mtime: now },
+    { name: 'map_layout.json', data: readFileOrJson(store.mapFile, store.mapLayout), mtime: now },
+    { name: 'club.key', data: clubKey, mtime: now },
+  ];
+
+  const tvConfigFile = path.join(store.dir, 'tv-config.json');
+  if (fs.existsSync(tvConfigFile)) {
+    packedFiles.push('tv-config.json');
+    entries.push({ name: 'tv-config.json', data: fs.readFileSync(tvConfigFile), mtime: now });
+
+    const tvAssetsDir = path.join(store.dir, 'tv-assets');
+    if (fs.existsSync(tvAssetsDir)) {
+      const assetFiles = fs
+        .readdirSync(tvAssetsDir, { withFileTypes: true })
+        .filter((d) => d.isFile() && TV_ASSET_NAME_RE.test(d.name))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const file of assetFiles) {
+        const zipName = `tv-assets/${file.name}`;
+        packedFiles.push(zipName);
+        entries.push({
+          name: zipName,
+          data: fs.readFileSync(path.join(tvAssetsDir, file.name)),
+          store: true,
+          mtime: now,
+        });
+      }
+    }
+  }
+
   const manifest: BackupManifest = {
     format: 'vade-backup',
     version: 1,
@@ -96,15 +164,8 @@ export function buildBackupEntries(store: BackupStoreLike, appVersion: string, n
     createdAt: now.toISOString(),
     files: packedFiles,
   };
-  const clubKey = String(store.settings.security?.clubKey ?? '').trim();
 
-  return [
-    { name: 'manifest.json', data: JSON.stringify(manifest, null, 2), mtime: now },
-    { name: 'settings.json', data: readFileOrJson(store.settingsFile, store.settings), mtime: now },
-    { name: 'pcs.json', data: readFileOrJson(store.pcsFile, store.pcs), mtime: now },
-    { name: 'map_layout.json', data: readFileOrJson(store.mapFile, store.mapLayout), mtime: now },
-    { name: 'club.key', data: clubKey, mtime: now },
-  ];
+  return [{ name: 'manifest.json', data: JSON.stringify(manifest, null, 2), mtime: now }, ...entries];
 }
 
 export async function writeBackupZip(
@@ -214,10 +275,32 @@ export async function validateAndImportBackupZip(
   const sanitizedMap = sanitizeMapLayout(rawMap);
   const restoredMapBuf = Buffer.from(JSON.stringify(sanitizedMap, null, 2), 'utf8');
 
+  // 4b. Validate optional TV kiosk config & assets (preserve compatibility when absent)
+  const tvAssetsToRestore: Array<{ name: string; data: Buffer }> = [];
+  for (const [entryName, data] of entries.entries()) {
+    if (!entryName.startsWith('tv-assets/')) continue;
+    const fileName = entryName.slice('tv-assets/'.length);
+    if (!TV_ASSET_NAME_RE.test(fileName)) {
+      throw new Error(`Некоректне ім'я файлу ресурсу TV у резервній копії: ${entryName}`);
+    }
+    tvAssetsToRestore.push({ name: fileName, data });
+  }
+
+  let restoredTvConfigBuf: Buffer | null = null;
+  if (entries.has('tv-config.json')) {
+    const { value: rawTv } = parseJsonEntry(entries, 'tv-config.json');
+    if (!isPlainObject(rawTv)) {
+      throw new Error('Некоректний файл tv-config.json у резервній копії');
+    }
+    restoredTvConfigBuf = mapTvLocalUrlsToAssetRefs(rawTv);
+  }
+
   // 5. All checks passed: snapshot current files before overwriting
+  const tvConfigFile = path.join(store.dir, 'tv-config.json');
+  const tvAssetsDir = path.join(store.dir, 'tv-assets');
   const preBackupDir = uniquePreBackupDir(store.dir, new Date());
   fs.mkdirSync(preBackupDir, { recursive: true });
-  for (const src of [store.settingsFile, store.pcsFile, store.mapFile]) {
+  for (const src of [store.settingsFile, store.pcsFile, store.mapFile, tvConfigFile]) {
     if (fs.existsSync(src)) {
       fs.copyFileSync(src, path.join(preBackupDir, path.basename(src)));
     }
@@ -226,14 +309,50 @@ export async function validateAndImportBackupZip(
       fs.copyFileSync(bak, path.join(preBackupDir, path.basename(bak)));
     }
   }
+  if (fs.existsSync(tvAssetsDir)) {
+    const preAssetsDir = path.join(preBackupDir, 'tv-assets');
+    fs.mkdirSync(preAssetsDir, { recursive: true });
+    for (const d of fs.readdirSync(tvAssetsDir, { withFileTypes: true })) {
+      if (d.isFile() && TV_ASSET_NAME_RE.test(d.name)) {
+        fs.copyFileSync(path.join(tvAssetsDir, d.name), path.join(preAssetsDir, d.name));
+      }
+    }
+  }
 
   // 6. Atomically restore validated configuration files
   writeAtomicWithBak(store.settingsFile, restoredSettingsBuf);
   writeAtomicWithBak(store.pcsFile, pcsBuf);
   writeAtomicWithBak(store.mapFile, restoredMapBuf);
 
+  if (restoredTvConfigBuf !== null) {
+    writeAtomicWithBak(tvConfigFile, restoredTvConfigBuf);
+    fs.mkdirSync(tvAssetsDir, { recursive: true });
+    const tvAssetsRoot = path.resolve(tvAssetsDir);
+    const keepAssetNames = new Set(tvAssetsToRestore.map((a) => a.name.toLowerCase()));
+    for (const existing of fs.readdirSync(tvAssetsDir, { withFileTypes: true })) {
+      if (!existing.isFile() || keepAssetNames.has(existing.name.toLowerCase())) continue;
+      try {
+        fs.unlinkSync(path.join(tvAssetsDir, existing.name));
+      } catch {
+        // ignore locked files
+      }
+    }
+    for (const asset of tvAssetsToRestore) {
+      const dest = path.resolve(tvAssetsRoot, asset.name);
+      if (path.dirname(dest) !== tvAssetsRoot) {
+        throw new Error(`Unsafe TV asset restore path: ${asset.name}`);
+      }
+      const tmpAsset = `${dest}.tmp-${process.pid}`;
+      fs.writeFileSync(tmpAsset, asset.data);
+      fs.renameSync(tmpAsset, dest);
+    }
+  }
+
   if ('reloadFromDisk' in store && typeof store.reloadFromDisk === 'function') {
     store.reloadFromDisk();
+  }
+  if ('tvReloadFromDisk' in store && typeof store.tvReloadFromDisk === 'function') {
+    store.tvReloadFromDisk();
   }
 
   return { preBackupDir, manifest };

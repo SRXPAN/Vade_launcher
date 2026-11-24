@@ -5,3 +5,5 @@ export * from './defaults';
 export * from './schedule';
 export * from './validate';
 export * from './resolve';
+export * from './tv';
+export * from './qr';

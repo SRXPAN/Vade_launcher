@@ -7,6 +7,7 @@
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_AGENT_PORT = 7420;
 export const DEFAULT_DISCOVERY_PORT = 7422;
+export const DEFAULT_TV_PORT = 7425;
 
 /* ------------------------------------------------------------------ */
 /* Admin-side configuration                                            */
@@ -312,6 +313,9 @@ export type AuditAction =
   | 'role.lock'
   | 'games.install'
   | 'games.uninstall'
+  | 'tv.save'
+  | 'tv.publish'
+  | 'tv.server_toggle'
   | (string & {});
 
 export interface AuditEntry {
@@ -700,4 +704,46 @@ export interface DeployFileResult {
   bytes: number;
   targetPath: string;
   message: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* TV Kiosk Display Config                                            */
+/* ------------------------------------------------------------------ */
+
+export type TvLang = 'pl' | 'ua' | 'en';
+export type TvSlideMode = 'image_only' | 'with_text';
+export type TvQrSource = 'upload' | 'generate';
+export type TvQrBgType = 'color' | 'image';
+
+export interface TvSlide {
+  id: string;
+  enabled: boolean;
+  imageDataUrl: string;
+  mode: TvSlideMode;
+  title?: string;
+  subtitle?: string;
+  durationSec?: number;
+}
+
+export interface TvQrCard {
+  id: string;
+  enabled: boolean;
+  label: string;
+  sublabel?: string;
+  qrSource: TvQrSource;
+  qrText?: string;
+  qrImageDataUrl?: string;
+  bgType: TvQrBgType;
+  bgColor: string;
+  bgImageDataUrl?: string;
+}
+
+export interface TvDisplayConfig {
+  updatedAt: number;
+  lang: TvLang;
+  defaultSlideDurationSec: number;
+  localServerEnabled: boolean;
+  localServerPort: number;
+  slides: TvSlide[];
+  qrCards: TvQrCard[];
 }

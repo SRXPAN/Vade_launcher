@@ -12,7 +12,8 @@ export type ProtectedFeature =
   | 'deploy'
   | 'agent.update'
   | 'backup'
-  | 'power.occupied';
+  | 'power.occupied'
+  | 'tv.edit';
 
 const OWNER_OCCUPIED_ACTIONS = new Set<PcAction>([
   'shutdown',
